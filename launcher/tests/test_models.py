@@ -8,12 +8,14 @@ import yaml
 from chipbit.models import (
     CardsConfig,
     Catalog,
+    CatalogSettings,
     ConfigLoadError,
     EnrolledCard,
     SystemCard,
     load_cards,
     load_catalog,
     normalize_uid,
+    resolve_title_content_path,
     save_cards,
 )
 
@@ -25,6 +27,7 @@ def test_repo_catalog_loads_every_supported_type() -> None:
 
     assert isinstance(catalog, Catalog)
     assert catalog.catalog_version == 1
+    assert catalog.settings.games_root == Path("/games")
     assert {title.type for title in catalog.titles.values()} == {
         "exec",
         "scummvm",
@@ -34,6 +37,7 @@ def test_repo_catalog_loads_every_supported_type() -> None:
     }
     assert catalog.titles["gcompris"].cmd == ("gcompris-qt", "--fullscreen")
     assert catalog.titles["puttmoon"].game_id == "puttmoon"
+    assert catalog.titles["puttmoon"].data_dir == "scummvm/puttmoon"
     assert catalog.titles["readerrabbit-dos"].conf == "readerrabbit/rr.conf"
     assert catalog.titles["pbskids"].allowlist == (
         "pbskids.org",
@@ -84,6 +88,56 @@ titles:
     assert "bad-web" in caplog.text
     assert "bad-install" in caplog.text
     assert "bad-cmd" in caplog.text
+
+
+def test_resolve_title_content_path_uses_games_root_and_scummvm_default() -> None:
+    settings = CatalogSettings(games_root=Path("/mnt/games"))
+    scummvm_title = catalog_title(
+        id="puttmoon",
+        type="scummvm",
+        game_id="puttmoon",
+    )
+    dosbox_title = catalog_title(
+        id="readerrabbit-dos",
+        type="dosbox",
+        conf="readerrabbit/rr.conf",
+    )
+    ruffle_title = catalog_title(
+        id="mathblaster-flash",
+        type="ruffle",
+        swf="flash/mathblaster.swf",
+    )
+
+    assert resolve_title_content_path(scummvm_title, settings.games_root) == Path(
+        "/mnt/games/scummvm/puttmoon"
+    )
+    assert resolve_title_content_path(dosbox_title, settings.games_root) == Path(
+        "/mnt/games/readerrabbit/rr.conf"
+    )
+    assert resolve_title_content_path(ruffle_title, settings.games_root) == Path(
+        "/mnt/games/flash/mathblaster.swf"
+    )
+
+
+def test_load_catalog_rejects_relative_games_root(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "catalog.yaml"
+    catalog_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: games
+titles: []
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        load_catalog(catalog_path)
+    except ConfigLoadError as exc:
+        assert "games_root" in str(exc)
+    else:
+        raise AssertionError("Expected ConfigLoadError")
 
 
 def test_normalize_uid_strips_separators_and_uppercases() -> None:
@@ -218,3 +272,25 @@ titles:
 
     assert catalog.titles == {}
     assert "min_age must be an integer" in caplog.text
+
+
+def catalog_title(
+    *,
+    id: str,
+    type: str,
+    bundled: bool = False,
+    game_id: str | None = None,
+    conf: str | None = None,
+    swf: str | None = None,
+) -> object:
+    from chipbit.models import CatalogTitle
+
+    return CatalogTitle(
+        id=id,
+        label=id,
+        type=type,
+        bundled=bundled,
+        game_id=game_id,
+        conf=conf,
+        swf=swf,
+    )

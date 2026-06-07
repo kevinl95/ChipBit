@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 
 TitleType = Literal["scummvm", "dosbox", "exec", "web", "ruffle"]
 SystemAction = Literal["home", "unlock", "shutdown", "volume"]
+DEFAULT_GAMES_ROOT = Path("/games")
+_DEFAULT_SCUMMVM_DATA_DIR = Path("scummvm")
 
 _ALLOWED_INSTALL_MANAGERS = frozenset({"apt", "flatpak", "pip"})
 _ALLOWED_SYSTEM_ACTIONS = frozenset({"home", "unlock", "shutdown", "volume"})
@@ -22,6 +24,13 @@ _ALLOWED_SYSTEM_ACTIONS = frozenset({"home", "unlock", "shutdown", "volume"})
 
 class ConfigLoadError(ValueError):
     """Raised when a config file cannot be parsed at the file level."""
+
+
+@dataclass(frozen=True)
+class CatalogSettings:
+    """Catalog-wide runtime settings."""
+
+    games_root: Path = DEFAULT_GAMES_ROOT
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,7 @@ class CatalogTitle:
     bundled: bool
     install: dict[str, tuple[str, ...]] = field(default_factory=dict)
     data: str | None = None
+    data_dir: str | None = None
     game_id: str | None = None
     conf: str | None = None
     cmd: tuple[str, ...] = ()
@@ -51,6 +61,7 @@ class Catalog:
     """Parsed catalog file."""
 
     catalog_version: int | None
+    settings: CatalogSettings = field(default_factory=CatalogSettings)
     titles: dict[str, CatalogTitle] = field(default_factory=dict)
 
 
@@ -104,6 +115,10 @@ def load_catalog(path: Path) -> Catalog:
     if meta and not isinstance(meta, dict):
         raise ConfigLoadError("catalog 'meta' must be a mapping")
 
+    raw_settings = data.get("settings") or {}
+    if raw_settings and not isinstance(raw_settings, dict):
+        raise ConfigLoadError("catalog 'settings' must be a mapping")
+
     raw_titles = data.get("titles") or []
     if not isinstance(raw_titles, list):
         raise ConfigLoadError("catalog 'titles' must be a list")
@@ -111,6 +126,8 @@ def load_catalog(path: Path) -> Catalog:
     version = meta.get("catalog_version") if isinstance(meta, dict) else None
     if version is not None and type(version) is not int:
         raise ConfigLoadError("catalog meta.catalog_version must be an integer")
+
+    settings = _parse_catalog_settings(raw_settings)
 
     titles: dict[str, CatalogTitle] = {}
     for index, raw_title in enumerate(raw_titles, start=1):
@@ -122,7 +139,24 @@ def load_catalog(path: Path) -> Catalog:
             continue
         titles[title.id] = title
 
-    return Catalog(catalog_version=version, titles=titles)
+    return Catalog(catalog_version=version, settings=settings, titles=titles)
+
+
+def resolve_title_content_path(
+    title: CatalogTitle,
+    games_root: Path,
+) -> Path | None:
+    """Resolve a title's catalog-declared content path against games_root."""
+    if title.type == "scummvm":
+        relative_path = Path(title.data_dir or _DEFAULT_SCUMMVM_DATA_DIR / title.id)
+    elif title.type == "dosbox" and title.conf is not None:
+        relative_path = Path(title.conf)
+    elif title.type == "ruffle" and title.swf is not None:
+        relative_path = Path(title.swf)
+    else:
+        return None
+
+    return games_root / relative_path
 
 
 def load_cards(path: Path) -> CardsConfig:
@@ -277,6 +311,12 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         )
         return None
 
+    data_dir = None
+    if raw_title.get("data_dir") is not None:
+        data_dir = _optional_string(raw_title.get("data_dir"), title_id, "data_dir")
+        if data_dir is None:
+            return None
+
     subject = _optional_string(raw_title.get("subject"), title_id, "subject")
     if raw_title.get("subject") is not None and subject is None:
         return None
@@ -330,6 +370,7 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         bundled=bundled,
         install=install,
         data=data,
+        data_dir=data_dir,
         game_id=game_id,
         conf=conf,
         cmd=cmd,
@@ -373,6 +414,22 @@ def _parse_install(
         install[manager] = tuple(packages)
 
     return install
+
+
+def _parse_catalog_settings(raw_settings: dict[str, Any]) -> CatalogSettings:
+    games_root_value = raw_settings.get("games_root")
+    if games_root_value is None:
+        return CatalogSettings()
+
+    games_root = _non_empty_string(games_root_value)
+    if games_root is None:
+        raise ConfigLoadError("catalog settings.games_root must be a non-empty string")
+
+    parsed_games_root = Path(games_root)
+    if not parsed_games_root.is_absolute():
+        raise ConfigLoadError("catalog settings.games_root must be an absolute path")
+
+    return CatalogSettings(games_root=parsed_games_root)
 
 
 def _parse_argv(raw_argv: Any, title_id: str) -> tuple[str, ...]:

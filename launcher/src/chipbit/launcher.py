@@ -20,6 +20,7 @@ from .models import (
     load_cards,
     load_catalog,
     normalize_uid,
+    resolve_title_content_path,
 )
 
 log = logging.getLogger(__name__)
@@ -253,7 +254,11 @@ class LauncherService:
                 return
             self.stop_current()
 
-        argv = build_launch_argv(title, self.settings)
+        argv = build_launch_argv(
+            title,
+            self.config.catalog.settings.games_root,
+            self.settings,
+        )
         try:
             process = self._popen_factory(argv, start_new_session=True)
         except (OSError, ValueError) as exc:
@@ -307,16 +312,35 @@ class LauncherService:
             )
 
 
-def build_launch_argv(title: CatalogTitle, settings: LaunchSettings) -> list[str]:
+def build_launch_argv(
+    title: CatalogTitle,
+    games_root: Path,
+    settings: LaunchSettings,
+) -> list[str]:
     """Return the argv used to launch a title."""
     if title.type == "scummvm":
-        return [settings.scummvm_bin, "-f", title.game_id or ""]
+        content_path = resolve_title_content_path(title, games_root)
+        if content_path is None or title.game_id is None:
+            raise ValueError("scummvm title is missing a resolved content path")
+        return [
+            settings.scummvm_bin,
+            "-f",
+            "-p",
+            str(content_path),
+            title.game_id,
+        ]
     if title.type == "dosbox":
-        return [settings.dosbox_bin, "-conf", title.conf or "", "-fullscreen"]
+        content_path = resolve_title_content_path(title, games_root)
+        if content_path is None:
+            raise ValueError("dosbox title is missing a resolved content path")
+        return [settings.dosbox_bin, "-conf", str(content_path), "-fullscreen"]
     if title.type == "exec":
         return list(title.cmd)
     if title.type == "ruffle":
-        return [settings.ruffle_bin, "--fullscreen", title.swf or ""]
+        content_path = resolve_title_content_path(title, games_root)
+        if content_path is None:
+            raise ValueError("ruffle title is missing a resolved content path")
+        return [settings.ruffle_bin, "--fullscreen", str(content_path)]
     return [
         settings.chromium_bin,
         "--kiosk",

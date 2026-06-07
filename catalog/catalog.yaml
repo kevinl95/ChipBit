@@ -9,6 +9,9 @@
 # (uid -> catalog id), and all launch detail lives here.
 #
 # Field contract:
+#   settings.games_root
+#                    absolute root for parent-supplied content exposed via
+#                    the share / USB ingest workflow.
 #   id        (req)  stable key, referenced by cards.yaml
 #   label     (req)  display name in the enroll UI and loading screen
 #   type      (req)  scummvm | dosbox | exec | web | ruffle
@@ -22,12 +25,16 @@
 #   data             "required" when the parent must supply content (game data
 #                    files / .swf). Enroll will not bind the card until it's
 #                    present — same rule as a failed install.
+#   data_dir         optional content directory override for scummvm titles;
+#                    defaults to `scummvm/<id>` under `settings.games_root`.
 #   Launch target (by type):
-#     scummvm -> game_id
-#     dosbox  -> conf            (path under the games dir)
+#     scummvm -> game_id + data_dir
+#                `id` names the folder/UI key; `game_id` is ScummVM's internal
+#                detector/launcher id. They are never interchangeable.
+#     dosbox  -> conf            (path under settings.games_root)
 #     exec    -> cmd             (argv list, never a shell string)
 #     web     -> url + allowlist
-#     ruffle  -> swf             (path under the games dir)
+#     ruffle  -> swf             (path under settings.games_root)
 #   Optional curation metadata (shown when browsing to enroll):
 #     subject, min_age, blurb, art
 #
@@ -37,6 +44,9 @@
 
 meta:
   catalog_version: 1
+
+settings:
+  games_root: /games
 
 titles:
 
@@ -91,6 +101,7 @@ titles:
     bundled: false        # nothing to install; gated on data instead
     data: required
     game_id: puttmoon
+    data_dir: scummvm/puttmoon
     subject: adventure
     min_age: 3
     art: putt-moon.png

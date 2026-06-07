@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from chipbit.launcher import FileBackedConfig, LauncherService, LaunchSettings
+from chipbit.launcher import (
+    FileBackedConfig,
+    LauncherService,
+    LaunchSettings,
+    build_launch_argv,
+)
+from chipbit.models import CatalogTitle
 from chipbit.reader import MockReader, pump_reader
 
 
@@ -165,6 +171,57 @@ system:
     service.on_scan("99-88-77")
 
     assert popen_recorder.calls == [(["two-app", "--fullscreen"], True)]
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        (
+            CatalogTitle(
+                id="puttmoon",
+                label="Putt-Putt",
+                type="scummvm",
+                bundled=False,
+                data="required",
+                game_id="puttmoon",
+                data_dir="scummvm/puttmoon",
+            ),
+            ["scummvm", "-f", "-p", "/games/scummvm/puttmoon", "puttmoon"],
+        ),
+        (
+            CatalogTitle(
+                id="readerrabbit-dos",
+                label="Reader Rabbit",
+                type="dosbox",
+                bundled=False,
+                data="required",
+                conf="readerrabbit/rr.conf",
+            ),
+            [
+                "dosbox-staging",
+                "-conf",
+                "/games/readerrabbit/rr.conf",
+                "-fullscreen",
+            ],
+        ),
+        (
+            CatalogTitle(
+                id="mathblaster-flash",
+                label="Math Blaster",
+                type="ruffle",
+                bundled=False,
+                data="required",
+                swf="flash/mathblaster.swf",
+            ),
+            ["ruffle", "--fullscreen", "/games/flash/mathblaster.swf"],
+        ),
+    ],
+)
+def test_build_launch_argv_resolves_engine_paths_from_games_root(
+    title: CatalogTitle,
+    expected: list[str],
+) -> None:
+    assert build_launch_argv(title, Path("/games"), LaunchSettings()) == expected
 
 
 def make_service(
