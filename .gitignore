@@ -43,6 +43,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.ruff_cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -203,9 +204,6 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
-# Ruff stuff:
-.ruff_cache/
-
 # PyPI configuration file
 .pypirc
 
@@ -216,3 +214,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ChipBit local runtime and image build artifacts
+/cards.yaml
+/games/
+*.img
+*.img.xz
