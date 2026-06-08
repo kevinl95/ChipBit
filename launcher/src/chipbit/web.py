@@ -202,28 +202,15 @@ KIOSK_EVENTS_SCRIPT = dedent("""
     const events = new EventSource('/events');
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
-      if (state.status.capture_mode) {
-        title.textContent = 'Tap a card now';
-        body.textContent = 'Enrollment is armed.';
-        return;
+            const badge = document.getElementById('live-mode');
+            if (badge && state.kiosk) {
+                badge.textContent = state.kiosk.kind;
       }
-      if (state.status.running && state.status.current) {
-        title.textContent = state.status.current;
-        body.textContent = 'Launching now.';
-        return;
-      }
-      if (state.mode === 'first-run') {
-        title.textContent = 'Tap a card to make it the admin card';
-        body.textContent = 'No network needed for first-run setup.';
-        return;
-      }
-      if (state.mode === 'locked') {
-        title.textContent = 'Tap the admin card';
-        body.textContent = 'That unlocks parent controls.';
-        return;
-      }
-      title.textContent = 'Tap a card';
-      body.textContent = 'Waiting for a game card, Home card, or admin card.';
+            if (!state.kiosk) {
+                return;
+            }
+            title.textContent = state.kiosk.title;
+            body.textContent = state.kiosk.body;
     };
     """).strip()
 
@@ -354,6 +341,7 @@ class WebApp:
         return {
             "mode": self._mode(cards, status),
             "status": status,
+            "kiosk": self._kiosk_state(cards, status),
             "has_admin_card": "unlock" in cards.system_cards,
             "title_cards": len(cards.title_cards),
             "system_cards": len(cards.system_cards),
@@ -702,6 +690,47 @@ class WebApp:
             return "Bundled in the image"
         return "Ready"
 
+    def _kiosk_state(
+        self,
+        cards: CardsConfig,
+        status: dict[str, object],
+    ) -> dict[str, str]:
+        if status.get("capture_mode") is True:
+            return {
+                "kind": "enroll",
+                "title": "Tap a card now",
+                "body": "Enrollment is armed.",
+            }
+
+        current = status.get("current")
+        if status.get("running") is True and isinstance(current, str) and current:
+            return {
+                "kind": "loading",
+                "title": current,
+                "body": "Launching now.",
+            }
+
+        last_event = status.get("last_event")
+        if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
+            return {
+                "kind": "unknown-card",
+                "title": "Ask a grown-up",
+                "body": "That card is not set up yet.",
+            }
+
+        if "unlock" not in cards.system_cards:
+            return {
+                "kind": "first-run",
+                "title": "Tap a card to make it the admin card",
+                "body": "No network needed for first-run setup.",
+            }
+
+        return {
+            "kind": "idle",
+            "title": "Tap a card",
+            "body": "Waiting for a game card, Home card, or admin card.",
+        }
+
     def _required_data_ready(self, title: CatalogTitle, catalog: Catalog) -> bool:
         cache_key = (
             title.id,
@@ -899,6 +928,12 @@ def create_web_server(
                                 "current": None,
                                 "unlocked": False,
                                 "capture_mode": False,
+                                "last_event": None,
+                            },
+                            "kiosk": {
+                                "kind": "error",
+                                "title": "Ask a grown-up",
+                                "body": "ChipBit needs attention right now.",
                             },
                         }
 

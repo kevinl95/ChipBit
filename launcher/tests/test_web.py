@@ -22,17 +22,21 @@ class FakeControlState:
     unlocked: bool = False
     capture_uid: str = "AABBCC"
     capture_mode: bool = False
+    running: bool = False
+    current: str | None = None
+    last_event: dict[str, object] | None = None
     reload_calls: int = 0
     capture_calls: int = 0
     lock_calls: int = 0
 
     def status_payload(self) -> dict[str, object]:
         return {
-            "running": False,
-            "current": None,
+            "running": self.running,
+            "current": self.current,
             "unlocked": self.unlocked,
             "cards": 0,
             "capture_mode": self.capture_mode,
+            "last_event": self.last_event,
         }
 
 
@@ -170,6 +174,62 @@ titles:
     ]
 
 
+def test_kiosk_events_reflect_idle_enroll_loading_and_unknown_states(
+    tmp_path: Path,
+) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        """
+system:
+  unlock: "ff-ee-dd"
+""",
+        encoding="utf-8",
+    )
+    control_state = FakeControlState(unlocked=False)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            idle = read_sse_payload(f"{web_url}/events")
+
+            control_state.capture_mode = True
+            enroll = read_sse_payload(f"{web_url}/events")
+
+            control_state.capture_mode = False
+            control_state.running = True
+            control_state.current = "Demo App"
+            loading = read_sse_payload(f"{web_url}/events")
+
+            control_state.running = False
+            control_state.current = None
+            control_state.last_event = {
+                "kind": "unknown-card",
+                "uid": "DEADBEEF",
+            }
+            unknown = read_sse_payload(f"{web_url}/events")
+
+    assert idle["kiosk"] == {
+        "kind": "idle",
+        "title": "Tap a card",
+        "body": "Waiting for a game card, Home card, or admin card.",
+    }
+    assert enroll["kiosk"] == {
+        "kind": "enroll",
+        "title": "Tap a card now",
+        "body": "Enrollment is armed.",
+    }
+    assert loading["kiosk"] == {
+        "kind": "loading",
+        "title": "Demo App",
+        "body": "Launching now.",
+    }
+    assert unknown["kiosk"] == {
+        "kind": "unknown-card",
+        "title": "Ask a grown-up",
+        "body": "That card is not set up yet.",
+    }
+
+
 @contextmanager
 def run_control_server(state: FakeControlState):
     def make_handler():
@@ -279,6 +339,16 @@ def http_post(url: str, form: dict[str, str]) -> str:
     request = Request(url, data=data, method="POST")
     with urlopen(request) as response:
         return response.read().decode("utf-8")
+
+
+def read_sse_payload(url: str) -> dict[str, object]:
+    with urlopen(url, timeout=2.0) as response:
+        while True:
+            line = response.readline().decode("utf-8")
+            if line.startswith("data: "):
+                return json.loads(line.removeprefix("data: ").strip())
+            if line == "":
+                raise AssertionError("SSE stream ended before a data event")
 
 
 class DetectRunner:

@@ -218,6 +218,26 @@ def test_lock_clears_unlock_state_immediately(tmp_path: Path) -> None:
     assert service.status()["unlocked"] is False
 
 
+def test_unknown_card_sets_transient_status_event(tmp_path: Path) -> None:
+    clock = FakeClock()
+    service, _, _, _ = make_service(
+        tmp_path,
+        monotonic=clock,
+    )
+
+    service.on_scan("de-ad-be-ef")
+
+    status = service.status()
+    assert status["last_event"] == {
+        "kind": "unknown-card",
+        "uid": "DEADBEEF",
+    }
+
+    clock.advance(6.0)
+
+    assert service.status()["last_event"] is None
+
+
 @pytest.mark.parametrize(
     ("title", "expected"),
     [

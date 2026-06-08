@@ -30,6 +30,7 @@ DEFAULT_CAPTURE_TIMEOUT_SECS = 30.0
 DEFAULT_POLL_SECS = 2.0
 DEFAULT_STOP_GRACE_SECS = 5.0
 DEFAULT_UNLOCK_TIMEOUT_SECS = 300.0
+DEFAULT_STATUS_EVENT_TTL_SECS = 5.0
 WhileRunningPolicy = Literal["home_only", "swap", "ignore"]
 _VALID_WHILE_RUNNING = frozenset({"home_only", "swap", "ignore"})
 
@@ -144,6 +145,8 @@ class LauncherService:
         self._capture_uid: str | None = None
         self._capture_event = threading.Event()
         self._unlock_deadline: float | None = None
+        self._last_event: dict[str, str] | None = None
+        self._last_event_deadline: float | None = None
 
     def on_scan(self, uid: str) -> None:
         """Handle a completed UID scan from either reader implementation."""
@@ -153,6 +156,7 @@ class LauncherService:
             if self._capture_armed:
                 self._capture_uid = normalized_uid
                 self._capture_armed = False
+                self._clear_last_event_locked()
                 self._capture_event.set()
                 log.info("captured uid %s", normalized_uid)
                 return
@@ -164,17 +168,24 @@ class LauncherService:
 
         title_id = self.config.cards.title_id_for_uid(normalized_uid)
         if title_id is None:
+            with self._lock:
+                self._set_last_event_locked("unknown-card", uid=normalized_uid)
             log.info("unknown card %s", normalized_uid)
             return
 
         title = self.config.catalog.titles.get(title_id)
         if title is None:
+            with self._lock:
+                self._set_last_event_locked("unknown-card", uid=normalized_uid)
             log.warning(
                 "card %s points to unknown catalog id %s",
                 normalized_uid,
                 title_id,
             )
             return
+
+        with self._lock:
+            self._clear_last_event_locked()
 
         self._launch_title(title)
 
@@ -186,6 +197,7 @@ class LauncherService:
         with self._lock:
             self._capture_uid = None
             self._capture_armed = True
+            self._clear_last_event_locked()
             self._capture_event.clear()
 
         captured = self._capture_event.wait(wait_timeout)
@@ -252,6 +264,7 @@ class LauncherService:
                 "unlocked": self._is_unlocked_locked(),
                 "cards": len(self.config.cards.title_cards),
                 "capture_mode": self._capture_armed,
+                "last_event": self._last_event_locked(),
             }
 
     def cards_snapshot(self) -> dict[str, dict[str, str]]:
@@ -332,6 +345,25 @@ class LauncherService:
             self._unlock_deadline = None
             return False
         return True
+
+    def _last_event_locked(self) -> dict[str, str] | None:
+        if self._last_event is None or self._last_event_deadline is None:
+            return None
+        if self._monotonic() >= self._last_event_deadline:
+            self._clear_last_event_locked()
+            return None
+        return dict(self._last_event)
+
+    def _set_last_event_locked(self, kind: str, *, uid: str | None = None) -> None:
+        event = {"kind": kind}
+        if uid is not None:
+            event["uid"] = uid
+        self._last_event = event
+        self._last_event_deadline = self._monotonic() + DEFAULT_STATUS_EVENT_TTL_SECS
+
+    def _clear_last_event_locked(self) -> None:
+        self._last_event = None
+        self._last_event_deadline = None
 
 
 def build_launch_argv(
