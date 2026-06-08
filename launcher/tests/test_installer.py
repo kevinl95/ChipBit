@@ -123,6 +123,49 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
     ]
 
 
+def test_ensure_install_spec_uses_requested_python_for_pip() -> None:
+    runner = FakeRunner(
+        [
+            ExpectedCall(
+                ["/tmp/custom-python", "-m", "pip", "show", "demo-app"],
+                returncode=1,
+            ),
+            ExpectedCall(
+                [
+                    "/tmp/custom-python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "--break-system-packages",
+                    "demo-app",
+                ]
+            ),
+            ExpectedCall(
+                ["/tmp/custom-python", "-m", "pip", "show", "demo-app"],
+                stdout="Name: demo-app\n",
+            ),
+        ]
+    )
+
+    progress = list(
+        ensure_install_spec_installed(
+            {"pip": ("demo-app",)},
+            runner=runner,
+            network_checker=lambda: True,
+            python_executable="/tmp/custom-python",
+        )
+    )
+
+    runner.assert_consumed()
+    assert [event.step for event in progress] == [
+        "checking",
+        "network-check",
+        "installing",
+        "verifying",
+        "installed",
+    ]
+
+
 def test_enroll_card_does_not_bind_when_install_fails(tmp_path: Path) -> None:
     cards_path = tmp_path / "cards.yaml"
     runner = FakeRunner(

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -247,6 +248,9 @@ class ControlClient:
     def reload(self) -> dict[str, object]:
         return self._request_json("POST", "/reload")
 
+    def lock(self) -> dict[str, object]:
+        return self._request_json("POST", "/lock")
+
     def capture(self) -> str:
         payload = self._request_json("POST", "/capture")
         uid = payload.get("uid")
@@ -290,6 +294,16 @@ class WebApp:
     network_checker: NetworkChecker | None = None
     scummvm_executable: str = "scummvm"
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS
+    _mutation_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
+    _readiness_cache: dict[tuple[str, ...], bool] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def render_index(
         self,
@@ -346,24 +360,27 @@ class WebApp:
         }
 
     def enroll_admin(self) -> str:
-        cards = load_cards(self.cards_path)
-        if "unlock" in cards.system_cards:
-            raise ValueError("admin card is already enrolled")
+        with self._mutation_lock:
+            cards = load_cards(self.cards_path)
+            if "unlock" in cards.system_cards:
+                raise ValueError("admin card is already enrolled")
 
-        uid = normalize_uid(self.control.capture())
-        system_cards = dict(cards.system_cards)
-        system_cards["unlock"] = SystemCard(action="unlock", uid=uid)
-        save_cards(
-            self.cards_path,
-            CardsConfig(
-                title_cards=dict(cards.title_cards),
-                system_cards=system_cards,
-            ),
-        )
+            uid = normalize_uid(self.control.capture())
+            system_cards = dict(cards.system_cards)
+            system_cards["unlock"] = SystemCard(action="unlock", uid=uid)
+            save_cards(
+                self.cards_path,
+                CardsConfig(
+                    title_cards=dict(cards.title_cards),
+                    system_cards=system_cards,
+                ),
+            )
         self.control.reload()
         return f"Admin card enrolled as {uid}"
 
     def enroll_title(self, title_id: str) -> str:
+        cards = load_cards(self.cards_path)
+        self._require_unlocked(cards)
         uid = self.control.capture()
         return self.enroll_title_for_uid(uid, title_id)
 
@@ -374,55 +391,65 @@ class WebApp:
         return self.enroll_title_for_uid(normalized_uid, title_id)
 
     def enroll_title_for_uid(self, uid: str, title_id: str) -> str:
-        catalog = self._load_catalog()
-        cards = load_cards(self.cards_path)
-        self._require_unlocked(cards)
+        with self._mutation_lock:
+            catalog = self._load_catalog()
+            cards = load_cards(self.cards_path)
+            self._require_unlocked(cards)
 
-        title = catalog.titles.get(title_id)
-        if title is None:
-            raise ValueError(f"unknown title: {title_id}")
+            title = catalog.titles.get(title_id)
+            if title is None:
+                raise ValueError(f"unknown title: {title_id}")
 
-        progress = list(
-            enroll_card(
-                uid,
-                title,
-                cards_path=self.cards_path,
-                games_root=catalog.settings.games_root,
-                runner=self.runner,
-                network_checker=self.network_checker,
-                scummvm_executable=self.scummvm_executable,
+            progress = list(
+                enroll_card(
+                    uid,
+                    title,
+                    cards_path=self.cards_path,
+                    games_root=catalog.settings.games_root,
+                    runner=self.runner,
+                    network_checker=self.network_checker,
+                    scummvm_executable=self.scummvm_executable,
+                )
             )
-        )
+
+        self._clear_readiness_cache()
         self.control.reload()
+        self.control.lock()
         if progress:
             return progress[-1].message
         normalized_uid = normalize_uid(uid)
         return f"Bound {normalized_uid} to {title.id}"
 
     def remove_card(self, uid: str) -> str:
-        cards = load_cards(self.cards_path)
-        self._require_unlocked(cards)
+        with self._mutation_lock:
+            cards = load_cards(self.cards_path)
+            self._require_unlocked(cards)
 
-        normalized_uid = normalize_uid(uid)
-        title_cards = dict(cards.title_cards)
-        removed = title_cards.pop(normalized_uid, None)
-        if removed is None:
-            raise ValueError(f"no enrolled card for {normalized_uid}")
+            normalized_uid = normalize_uid(uid)
+            title_cards = dict(cards.title_cards)
+            removed = title_cards.pop(normalized_uid, None)
+            if removed is None:
+                raise ValueError(f"no enrolled card for {normalized_uid}")
 
-        save_cards(
-            self.cards_path,
-            CardsConfig(
-                title_cards=title_cards,
-                system_cards=dict(cards.system_cards),
-            ),
-        )
+            save_cards(
+                self.cards_path,
+                CardsConfig(
+                    title_cards=title_cards,
+                    system_cards=dict(cards.system_cards),
+                ),
+            )
+
+        self._clear_readiness_cache()
         self.control.reload()
+        self.control.lock()
         return f"Removed card {normalized_uid} from {removed.title_id}"
 
     def reload_daemon(self) -> str:
         cards = load_cards(self.cards_path)
         self._require_unlocked(cards)
+        self._clear_readiness_cache()
         result = self.control.reload()
+        self.control.lock()
         if result.get("reloaded"):
             return "Reloaded daemon config"
         return "No config changes detected"
@@ -442,6 +469,7 @@ class WebApp:
         if result.returncode != 0:
             message = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise RuntimeError(f"Wi-Fi setup failed: {message}")
+        self.control.lock()
         return f"Connected Wi-Fi to {normalized_ssid}"
 
     def _require_unlocked(self, cards: CardsConfig) -> None:
@@ -666,18 +694,39 @@ class WebApp:
 
     def _title_state(self, title: CatalogTitle, catalog: Catalog) -> str:
         if title.data == "required":
-            ready = has_required_data(
-                title,
-                catalog.settings.games_root,
-                runner=self.runner,
-                scummvm_executable=self.scummvm_executable,
-            )
+            ready = self._required_data_ready(title, catalog)
             return "Data ready" if ready else "Needs parent-supplied data"
         if title.install:
             return "Installs on enroll"
         if title.bundled:
             return "Bundled in the image"
         return "Ready"
+
+    def _required_data_ready(self, title: CatalogTitle, catalog: Catalog) -> bool:
+        cache_key = (
+            title.id,
+            title.type,
+            title.game_id or "",
+            title.data_dir or "",
+            title.conf or "",
+            title.swf or "",
+            str(catalog.settings.games_root),
+        )
+        cached = self._readiness_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        ready = has_required_data(
+            title,
+            catalog.settings.games_root,
+            runner=self.runner,
+            scummvm_executable=self.scummvm_executable,
+        )
+        self._readiness_cache[cache_key] = ready
+        return ready
+
+    def _clear_readiness_cache(self) -> None:
+        self._readiness_cache.clear()
 
     def _layout(
         self,

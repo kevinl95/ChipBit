@@ -24,6 +24,13 @@ REOPEN_DELAY_SECS = 1.0
 
 if ecodes is not None:
     _KEYMAP = {getattr(ecodes, f"KEY_{digit}"): digit for digit in "0123456789"}
+    _KEYMAP.update(
+        {
+            getattr(ecodes, f"KEY_KP{digit}"): digit
+            for digit in "0123456789"
+            if hasattr(ecodes, f"KEY_KP{digit}")
+        }
+    )
     _KEYMAP.update({getattr(ecodes, f"KEY_{letter}"): letter for letter in "ABCDEF"})
     _ENTER = {ecodes.KEY_ENTER, ecodes.KEY_KPENTER}
 else:  # pragma: no cover - only used if evdev import fails

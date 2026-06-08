@@ -131,7 +131,10 @@ def ensure_install_spec_installed(
             packages=packages,
         )
         install_result = _run_command(
-            manager.install_argv(packages, flatpak_remote),
+            _rewrite_python_executable(
+                manager.install_argv(packages, flatpak_remote),
+                python_executable=executable,
+            ),
             runner=runner,
         )
         if install_result.returncode != 0:
@@ -352,6 +355,7 @@ def _manager_definitions() -> dict[str, _ManagerDefinition]:
                 "-m",
                 "pip",
                 "install",
+                "--break-system-packages",
                 *packages,
             ],
             is_installed=lambda result: result.returncode == 0,
@@ -367,9 +371,10 @@ def _package_is_installed(
     python_executable: str,
     flatpak_remote: str,
 ) -> bool:
-    argv = manager.check_argv(package, flatpak_remote)
-    if argv[:3] == [sys.executable, "-m", "pip"]:
-        argv = [python_executable, *argv[1:]]
+    argv = _rewrite_python_executable(
+        manager.check_argv(package, flatpak_remote),
+        python_executable=python_executable,
+    )
     result = _run_command(argv, runner=runner)
     return manager.is_installed(result)
 
@@ -398,6 +403,16 @@ def _normalize_package_name(package: object, manager_name: str) -> str:
             f"install.{manager_name} cannot contain empty package names"
         )
     return normalized
+
+
+def _rewrite_python_executable(
+    argv: list[str],
+    *,
+    python_executable: str,
+) -> list[str]:
+    if argv[:3] != [sys.executable, "-m", "pip"]:
+        return list(argv)
+    return [python_executable, *argv[1:]]
 
 
 def _scummvm_detect_output_has_game_id(output: str, game_id: str) -> bool:

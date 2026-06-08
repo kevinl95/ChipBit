@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,17 @@ class PopenRecorder:
         if not self._processes:
             raise AssertionError("No fake process left for Popen call")
         return self._processes.pop(0)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.current = 0.0
+
+    def __call__(self) -> float:
+        return self.current
+
+    def advance(self, seconds: float) -> None:
+        self.current += seconds
 
 
 def test_mock_reader_launches_bound_card(tmp_path: Path) -> None:
@@ -173,6 +185,39 @@ system:
     assert popen_recorder.calls == [(["two-app", "--fullscreen"], True)]
 
 
+def test_unlock_times_out_after_idle(tmp_path: Path) -> None:
+    clock = FakeClock()
+    service, _, _, _ = make_service(
+        tmp_path,
+        unlock_uid="12-34-56",
+        unlock_timeout_secs=60.0,
+        monotonic=clock,
+    )
+
+    service.on_scan("12-34-56")
+    assert service.status()["unlocked"] is True
+
+    clock.advance(61.0)
+
+    assert service.status()["unlocked"] is False
+
+
+def test_lock_clears_unlock_state_immediately(tmp_path: Path) -> None:
+    clock = FakeClock()
+    service, _, _, _ = make_service(
+        tmp_path,
+        unlock_uid="12-34-56",
+        monotonic=clock,
+    )
+
+    service.on_scan("12-34-56")
+    assert service.status()["unlocked"] is True
+
+    service.lock()
+
+    assert service.status()["unlocked"] is False
+
+
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
@@ -215,6 +260,25 @@ system:
             ),
             ["ruffle", "--fullscreen", "/games/flash/mathblaster.swf"],
         ),
+        (
+            CatalogTitle(
+                id="reader-rabbit-web",
+                label="Reader Rabbit Web",
+                type="web",
+                bundled=False,
+                url="https://example.invalid/game",
+            ),
+            [
+                "chromium",
+                "--kiosk",
+                "--noerrdialogs",
+                "--no-first-run",
+                "--disable-pinch",
+                "--disable-features=TranslateUI",
+                "--overscroll-history-navigation=0",
+                "--app=https://example.invalid/game",
+            ],
+        ),
     ],
 )
 def test_build_launch_argv_resolves_engine_paths_from_games_root(
@@ -229,6 +293,9 @@ def make_service(
     *,
     while_running: str = "home_only",
     processes: list[FakeProcess] | None = None,
+    unlock_uid: str | None = None,
+    unlock_timeout_secs: float = 300.0,
+    monotonic=None,
 ) -> tuple[
     LauncherService,
     PopenRecorder,
@@ -257,13 +324,7 @@ titles:
         encoding="utf-8",
     )
     cards_path.write_text(
-        """
-cards:
-  "aa-bb-cc": demo
-  "11-22-33": second
-system:
-  home: "ff-ee-dd"
-""",
+        build_cards_yaml(unlock_uid),
         encoding="utf-8",
     )
 
@@ -282,14 +343,31 @@ system:
         settings=LaunchSettings(
             while_running=policy_value(while_running),
             stop_grace_secs=0.1,
+            unlock_timeout_secs=unlock_timeout_secs,
         ),
         popen_factory=popen_recorder,
         killpg=record_killpg,
         getpgid=lambda pid: pid + 5000,
         thread_factory=None,
+        monotonic=time.monotonic if monotonic is None else monotonic,
     )
     return service, popen_recorder, killpg_calls, config
 
 
 def policy_value(policy: str) -> str:
     return policy
+
+
+def build_cards_yaml(unlock_uid: str | None) -> str:
+    unlock_line = ""
+    if unlock_uid is not None:
+        unlock_line = f'  unlock: "{unlock_uid}"\n'
+    return (
+        "\n"
+        "cards:\n"
+        '  "aa-bb-cc": demo\n'
+        '  "11-22-33": second\n'
+        "system:\n"
+        '  home: "ff-ee-dd"\n'
+        f"{unlock_line}"
+    )

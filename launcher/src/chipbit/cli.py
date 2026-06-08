@@ -15,6 +15,7 @@ from .control_api import create_control_server
 from .launcher import (
     DEFAULT_POLL_SECS,
     DEFAULT_STOP_GRACE_SECS,
+    DEFAULT_UNLOCK_TIMEOUT_SECS,
     FileBackedConfig,
     LauncherService,
     LaunchSettings,
@@ -53,9 +54,14 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=DEFAULT_STOP_GRACE_SECS,
     )
+    parser.add_argument(
+        "--unlock-timeout-secs",
+        type=float,
+        default=DEFAULT_UNLOCK_TIMEOUT_SECS,
+    )
     parser.add_argument("--scummvm-bin", default="scummvm")
     parser.add_argument("--dosbox-bin", default="dosbox-staging")
-    parser.add_argument("--chromium-bin", default="chromium-browser")
+    parser.add_argument("--chromium-bin", default="chromium")
     parser.add_argument("--ruffle-bin", default="ruffle")
     parser.add_argument("--allow-shutdown", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -84,6 +90,7 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         settings=LaunchSettings(
             while_running=args.while_running,
             stop_grace_secs=args.stop_grace_secs,
+            unlock_timeout_secs=args.unlock_timeout_secs,
             scummvm_bin=args.scummvm_bin,
             dosbox_bin=args.dosbox_bin,
             chromium_bin=args.chromium_bin,

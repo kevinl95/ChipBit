@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ log = logging.getLogger(__name__)
 DEFAULT_CAPTURE_TIMEOUT_SECS = 30.0
 DEFAULT_POLL_SECS = 2.0
 DEFAULT_STOP_GRACE_SECS = 5.0
+DEFAULT_UNLOCK_TIMEOUT_SECS = 300.0
 WhileRunningPolicy = Literal["home_only", "swap", "ignore"]
 _VALID_WHILE_RUNNING = frozenset({"home_only", "swap", "ignore"})
 
@@ -37,9 +39,10 @@ class LaunchSettings:
     while_running: WhileRunningPolicy = "home_only"
     capture_timeout_secs: float = DEFAULT_CAPTURE_TIMEOUT_SECS
     stop_grace_secs: float = DEFAULT_STOP_GRACE_SECS
+    unlock_timeout_secs: float = DEFAULT_UNLOCK_TIMEOUT_SECS
     scummvm_bin: str = "scummvm"
     dosbox_bin: str = "dosbox-staging"
-    chromium_bin: str = "chromium-browser"
+    chromium_bin: str = "chromium"
     ruffle_bin: str = "ruffle"
     allow_shutdown: bool = False
     shutdown_command: tuple[str, ...] = ("systemctl", "poweroff")
@@ -48,6 +51,8 @@ class LaunchSettings:
     def __post_init__(self) -> None:
         if self.while_running not in _VALID_WHILE_RUNNING:
             raise ValueError(f"invalid while_running policy: {self.while_running!r}")
+        if self.unlock_timeout_secs <= 0:
+            raise ValueError("unlock_timeout_secs must be greater than zero")
 
 
 class FileBackedConfig:
@@ -122,6 +127,7 @@ class LauncherService:
         killpg: Callable[[int, int], None] = os.killpg,
         getpgid: Callable[[int], int] = os.getpgid,
         thread_factory: Callable[..., threading.Thread] | None = threading.Thread,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
         self.settings = settings or LaunchSettings()
@@ -129,6 +135,7 @@ class LauncherService:
         self._killpg = killpg
         self._getpgid = getpgid
         self._thread_factory = thread_factory
+        self._monotonic = monotonic
 
         self._lock = threading.RLock()
         self._current_process: object | None = None
@@ -136,7 +143,7 @@ class LauncherService:
         self._capture_armed = False
         self._capture_uid: str | None = None
         self._capture_event = threading.Event()
-        self.unlocked = False
+        self._unlock_deadline: float | None = None
 
     def on_scan(self, uid: str) -> None:
         """Handle a completed UID scan from either reader implementation."""
@@ -190,6 +197,11 @@ class LauncherService:
         """Reload catalog/cards from disk."""
         return self.config.load(force=force)
 
+    def lock(self) -> None:
+        """Immediately relock configuration mode."""
+        with self._lock:
+            self._unlock_deadline = None
+
     def stop_current(self) -> None:
         """Stop the current child process group, escalating if needed."""
         with self._lock:
@@ -237,7 +249,7 @@ class LauncherService:
             return {
                 "running": running,
                 "current": current,
-                "unlocked": self.unlocked,
+                "unlocked": self._is_unlocked_locked(),
                 "cards": len(self.config.cards.title_cards),
                 "capture_mode": self._capture_armed,
             }
@@ -296,7 +308,9 @@ class LauncherService:
             return
         if action == "unlock":
             with self._lock:
-                self.unlocked = True
+                self._unlock_deadline = (
+                    self._monotonic() + self.settings.unlock_timeout_secs
+                )
             return
         if action == "shutdown":
             if self.settings.allow_shutdown:
@@ -310,6 +324,14 @@ class LauncherService:
                 list(self.settings.volume_command),
                 start_new_session=True,
             )
+
+    def _is_unlocked_locked(self) -> bool:
+        if self._unlock_deadline is None:
+            return False
+        if self._monotonic() >= self._unlock_deadline:
+            self._unlock_deadline = None
+            return False
+        return True
 
 
 def build_launch_argv(
