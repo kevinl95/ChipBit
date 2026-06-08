@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from .installer import (
     DataMissingError,
     InstallationError,
+    InstallProgress,
     NetworkUnavailableError,
     enroll_card,
     has_required_data,
@@ -190,27 +191,154 @@ PARENT_EVENTS_SCRIPT = dedent("""
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
       const badge = document.getElementById('live-mode');
+            const detail = document.getElementById('live-detail');
       if (badge) {
         badge.textContent = state.mode;
       }
+            if (detail) {
+                detail.textContent = state.operation ? state.operation.message : '';
+            }
     };
     """).strip()
+
+KIOSK_CSS = dedent("""
+        :root {
+            color-scheme: light;
+            --paper: #efe7d7;
+            --ink: #102030;
+            --accent: #d95f32;
+            --sun: #f3b94d;
+            --panel: rgba(255, 251, 244, 0.9);
+            --border: rgba(16, 32, 48, 0.12);
+            --shadow: rgba(16, 32, 48, 0.18);
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Avenir Next", "Trebuchet MS", "Gill Sans", sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(
+                    circle at top,
+                    rgba(243, 185, 77, 0.45),
+                    transparent 34%
+                ),
+                linear-gradient(180deg, #fff8ec 0%, #f4ead7 100%);
+        }
+        .kiosk-shell {
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 4vw;
+            box-sizing: border-box;
+        }
+        .kiosk-panel {
+            width: min(100%, 1180px);
+            min-height: min(78vh, 820px);
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(260px, 36%);
+            gap: clamp(1.5rem, 4vw, 3rem);
+            align-items: center;
+            padding: clamp(2rem, 5vw, 4rem);
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 36px;
+            box-shadow: 0 30px 80px var(--shadow);
+        }
+        .kiosk-copy {
+            display: grid;
+            gap: 1.25rem;
+            max-width: 44rem;
+        }
+        .kiosk-brand {
+            margin: 0;
+            color: var(--accent);
+            font-size: clamp(1rem, 2vw, 1.4rem);
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+        .kiosk-title {
+            margin: 0;
+            font-size: clamp(2.8rem, 7vw, 5.8rem);
+            line-height: 0.95;
+            letter-spacing: -0.04em;
+        }
+        .kiosk-body {
+            margin: 0;
+            font-size: clamp(1.3rem, 2.7vw, 2rem);
+            line-height: 1.35;
+            max-width: 30rem;
+        }
+        .kiosk-art-frame {
+            display: grid;
+            place-items: center;
+            aspect-ratio: 4 / 5;
+            border-radius: 28px;
+            background: linear-gradient(
+                180deg,
+                rgba(243, 185, 77, 0.28),
+                rgba(217, 95, 50, 0.14)
+            );
+            border: 1px solid rgba(217, 95, 50, 0.18);
+            overflow: hidden;
+        }
+        .kiosk-art-frame[hidden] {
+            display: none;
+        }
+        .kiosk-art {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        @media (max-width: 900px) {
+            .kiosk-panel {
+                grid-template-columns: minmax(0, 1fr);
+                min-height: auto;
+            }
+            .kiosk-copy,
+            .kiosk-body {
+                max-width: none;
+            }
+        }
+        """).strip()
 
 KIOSK_EVENTS_SCRIPT = dedent("""
     const title = document.getElementById('kiosk-title');
     const body = document.getElementById('kiosk-body');
+        const artFrame = document.getElementById('kiosk-art-frame');
+        const art = document.getElementById('kiosk-art');
     const events = new EventSource('/events');
-    events.onmessage = (event) => {
-      const state = JSON.parse(event.data);
-            const badge = document.getElementById('live-mode');
-            if (badge && state.kiosk) {
-                badge.textContent = state.kiosk.kind;
-      }
-            if (!state.kiosk) {
+
+        const applyKioskState = (kiosk) => {
+            if (!kiosk) {
                 return;
             }
-            title.textContent = state.kiosk.title;
-            body.textContent = state.kiosk.body;
+            title.textContent = kiosk.title;
+            body.textContent = kiosk.body;
+            if (artFrame && art) {
+                if (kiosk.art) {
+                    art.src = kiosk.art;
+                    art.alt = kiosk.title;
+                    artFrame.hidden = false;
+                } else {
+                    art.removeAttribute('src');
+                    art.alt = '';
+                    artFrame.hidden = true;
+                }
+            }
+        };
+
+    events.onmessage = (event) => {
+      const state = JSON.parse(event.data);
+            applyKioskState(state.kiosk);
+        };
+
+        events.onerror = () => {
+            applyKioskState({
+                title: 'Reconnecting to ChipBit',
+                body: 'Trying to reconnect. Hold tight.',
+            });
     };
     """).strip()
 
@@ -291,6 +419,16 @@ class WebApp:
         init=False,
         repr=False,
     )
+    _operation_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
+    _operation: dict[str, str] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def render_index(
         self,
@@ -320,28 +458,52 @@ class WebApp:
 
     def render_kiosk(self) -> str:
         body = dedent("""
-            <section class="panel panel-wide">
-              <p class="eyebrow">ChipBit</p>
-              <h1 id="kiosk-title">Tap a card</h1>
-              <p id="kiosk-body">
-                Waiting for a game card, Home card, or admin card.
-              </p>
-            </section>
+            <main class="kiosk-shell">
+              <section class="kiosk-panel">
+                <section class="kiosk-copy">
+                  <p class="kiosk-brand">ChipBit</p>
+                  <h1 class="kiosk-title" id="kiosk-title">Tap a card</h1>
+                  <p class="kiosk-body" id="kiosk-body">
+                    Waiting for a game card, Home card, or admin card.
+                  </p>
+                </section>
+                <section class="kiosk-art-frame" id="kiosk-art-frame" hidden>
+                  <img class="kiosk-art" id="kiosk-art" alt="" />
+                </section>
+              </section>
+            </main>
             """).strip()
-        return self._layout(
-            "ChipBit Kiosk",
-            body,
-            include_events=False,
-            script=KIOSK_EVENTS_SCRIPT,
-        )
+        return self._kiosk_layout(body)
+
+    def _kiosk_layout(self, body: str) -> str:
+        return dedent(f"""<!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <title>ChipBit</title>
+              <style>
+            {KIOSK_CSS}
+              </style>
+            </head>
+            <body>
+              {body}
+              <script>
+            {KIOSK_EVENTS_SCRIPT}
+              </script>
+            </body>
+            </html>
+            """).strip()
 
     def event_payload(self) -> dict[str, object]:
         cards = load_cards(self.cards_path)
         status = self.control.status()
+        operation = self._operation_snapshot()
         return {
             "mode": self._mode(cards, status),
             "status": status,
-            "kiosk": self._kiosk_state(cards, status),
+            "operation": operation,
+            "kiosk": self._kiosk_state(cards, status, operation),
             "has_admin_card": "unlock" in cards.system_cards,
             "title_cards": len(cards.title_cards),
             "system_cards": len(cards.system_cards),
@@ -388,8 +550,14 @@ class WebApp:
             if title is None:
                 raise ValueError(f"unknown title: {title_id}")
 
-            progress = list(
-                enroll_card(
+            progress: list[InstallProgress] = []
+            self._set_operation_state(
+                title=title.label,
+                message=f"Preparing {title.label}",
+                art=title.art,
+            )
+            try:
+                for event in enroll_card(
                     uid,
                     title,
                     cards_path=self.cards_path,
@@ -397,8 +565,15 @@ class WebApp:
                     runner=self.runner,
                     network_checker=self.network_checker,
                     scummvm_executable=self.scummvm_executable,
-                )
-            )
+                ):
+                    progress.append(event)
+                    self._set_operation_state(
+                        title=title.label,
+                        message=event.message,
+                        art=title.art,
+                    )
+            finally:
+                self._clear_operation_state()
 
         self._clear_readiness_cache()
         self.control.reload()
@@ -694,6 +869,7 @@ class WebApp:
         self,
         cards: CardsConfig,
         status: dict[str, object],
+        operation: dict[str, str] | None,
     ) -> dict[str, str]:
         if status.get("capture_mode") is True:
             return {
@@ -702,13 +878,32 @@ class WebApp:
                 "body": "Enrollment is armed.",
             }
 
+        if "unlock" not in cards.system_cards:
+            return {
+                "kind": "first-run",
+                "title": "Tap a card to make it the admin card",
+                "body": "No network needed for first-run setup.",
+            }
+
+        if operation is not None:
+            return {
+                "kind": operation["kind"],
+                "title": operation["title"],
+                "body": operation["message"],
+                **({"art": operation["art"]} if "art" in operation else {}),
+            }
+
         current = status.get("current")
         if status.get("running") is True and isinstance(current, str) and current:
-            return {
+            kiosk = {
                 "kind": "loading",
                 "title": current,
                 "body": "Launching now.",
             }
+            current_art = status.get("current_art")
+            if isinstance(current_art, str) and current_art:
+                kiosk["art"] = current_art
+            return kiosk
 
         last_event = status.get("last_event")
         if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
@@ -716,13 +911,6 @@ class WebApp:
                 "kind": "unknown-card",
                 "title": "Ask a grown-up",
                 "body": "That card is not set up yet.",
-            }
-
-        if "unlock" not in cards.system_cards:
-            return {
-                "kind": "first-run",
-                "title": "Tap a card to make it the admin card",
-                "body": "No network needed for first-run setup.",
             }
 
         return {
@@ -757,6 +945,33 @@ class WebApp:
     def _clear_readiness_cache(self) -> None:
         self._readiness_cache.clear()
 
+    def _operation_snapshot(self) -> dict[str, str] | None:
+        with self._operation_lock:
+            if self._operation is None:
+                return None
+            return dict(self._operation)
+
+    def _set_operation_state(
+        self,
+        *,
+        title: str,
+        message: str,
+        art: str | None,
+    ) -> None:
+        operation = {
+            "kind": "loading",
+            "title": title,
+            "message": message,
+        }
+        if art:
+            operation["art"] = art
+        with self._operation_lock:
+            self._operation = operation
+
+    def _clear_operation_state(self) -> None:
+        with self._operation_lock:
+            self._operation = None
+
     def _layout(
         self,
         title: str,
@@ -789,7 +1004,13 @@ class WebApp:
                     <p class="eyebrow">ChipBit</p>
                     <h1>{escape(title)}</h1>
                   </div>
-                  <p>Live mode: <strong id="live-mode">loading</strong></p>
+                                    <div>
+                                        <p>
+                                            Live mode:
+                                            <strong id="live-mode">loading</strong>
+                                        </p>
+                                        <p class="muted" id="live-detail"></p>
+                                    </div>
                 </header>
                 {body}
               </main>
@@ -926,10 +1147,12 @@ def create_web_server(
                             "status": {
                                 "running": False,
                                 "current": None,
+                                "current_art": None,
                                 "unlocked": False,
                                 "capture_mode": False,
                                 "last_event": None,
                             },
+                            "operation": None,
                             "kiosk": {
                                 "kind": "error",
                                 "title": "Ask a grown-up",

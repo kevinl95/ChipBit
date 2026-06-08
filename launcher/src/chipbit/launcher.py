@@ -18,10 +18,12 @@ from .models import (
     Catalog,
     CatalogTitle,
     ConfigLoadError,
+    SystemCard,
     load_cards,
     load_catalog,
     normalize_uid,
     resolve_title_content_path,
+    save_cards,
 )
 
 log = logging.getLogger(__name__)
@@ -160,6 +162,9 @@ class LauncherService:
                 self._capture_event.set()
                 log.info("captured uid %s", normalized_uid)
                 return
+            if "unlock" not in self.config.cards.system_cards:
+                self._auto_enroll_admin_locked(normalized_uid)
+                return
 
         system_action = self.config.cards.system_action_for_uid(normalized_uid)
         if system_action is not None:
@@ -261,6 +266,9 @@ class LauncherService:
             return {
                 "running": running,
                 "current": current,
+                "current_art": (
+                    None if self._current_title is None else self._current_title.art
+                ),
                 "unlocked": self._is_unlocked_locked(),
                 "cards": len(self.config.cards.title_cards),
                 "capture_mode": self._capture_armed,
@@ -345,6 +353,21 @@ class LauncherService:
             self._unlock_deadline = None
             return False
         return True
+
+    def _auto_enroll_admin_locked(self, uid: str) -> None:
+        cards = self.config.cards
+        system_cards = dict(cards.system_cards)
+        system_cards["unlock"] = SystemCard(action="unlock", uid=uid)
+        save_cards(
+            self.config.cards_path,
+            CardsConfig(
+                title_cards=dict(cards.title_cards),
+                system_cards=system_cards,
+            ),
+        )
+        self._clear_last_event_locked()
+        self.config.load(force=True)
+        log.info("first-run admin card enrolled as %s", uid)
 
     def _last_event_locked(self) -> dict[str, str] | None:
         if self._last_event is None or self._last_event_deadline is None:

@@ -16,7 +16,7 @@ from chipbit.launcher import (
     LaunchSettings,
     build_launch_argv,
 )
-from chipbit.models import CatalogTitle
+from chipbit.models import CatalogTitle, load_cards
 from chipbit.reader import MockReader, pump_reader
 
 
@@ -172,7 +172,8 @@ def test_reload_replaces_cards_after_file_change(tmp_path: Path) -> None:
 cards:
   "99-88-77": second
 system:
-  home: "ff-ee-dd"
+    home: "ff-ee-dd"
+    unlock: "12-34-56"
 """,
         encoding="utf-8",
     )
@@ -235,6 +236,19 @@ def test_unknown_card_sets_transient_status_event(tmp_path: Path) -> None:
 
     clock.advance(6.0)
 
+    assert service.status()["last_event"] is None
+
+
+def test_first_scan_auto_enrolls_admin_card_when_no_admin_exists(
+    tmp_path: Path,
+) -> None:
+    service, popen_recorder, _, config = make_service(tmp_path)
+
+    service.on_scan("12-34-56")
+
+    cards = load_cards(config.cards_path)
+    assert cards.system_cards["unlock"].uid == "123456"
+    assert popen_recorder.calls == []
     assert service.status()["last_event"] is None
 
 
@@ -313,7 +327,7 @@ def make_service(
     *,
     while_running: str = "home_only",
     processes: list[FakeProcess] | None = None,
-    unlock_uid: str | None = None,
+    unlock_uid: str | None = "12-34-56",
     unlock_timeout_secs: float = 300.0,
     monotonic=None,
 ) -> tuple[

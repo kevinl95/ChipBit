@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+import chipbit.web as web_module
+from chipbit.installer import InstallProgress
 from chipbit.models import load_cards
 from chipbit.web import create_web_server
 
@@ -24,6 +26,7 @@ class FakeControlState:
     capture_mode: bool = False
     running: bool = False
     current: str | None = None
+    current_art: str | None = None
     last_event: dict[str, object] | None = None
     reload_calls: int = 0
     capture_calls: int = 0
@@ -33,6 +36,7 @@ class FakeControlState:
         return {
             "running": self.running,
             "current": self.current,
+            "current_art": self.current_art,
             "unlocked": self.unlocked,
             "cards": 0,
             "capture_mode": self.capture_mode,
@@ -54,6 +58,25 @@ def test_first_run_requires_admin_enrollment_before_anything_else(
     assert "Make this card the admin card" in body
     assert "Demo App" not in body
     assert "Wi-Fi" not in body
+
+
+def test_kiosk_first_run_prompt_wins_over_unknown_card_event(tmp_path: Path) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    control_state = FakeControlState(
+        unlocked=False,
+        last_event={"kind": "unknown-card", "uid": "DEADBEEF"},
+    )
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            payload = read_sse_payload(f"{web_url}/events")
+
+    assert payload["kiosk"] == {
+        "kind": "first-run",
+        "title": "Tap a card to make it the admin card",
+        "body": "No network needed for first-run setup.",
+    }
 
 
 def test_admin_enrollment_and_title_enrollment_work_against_mock_daemon(
@@ -198,10 +221,12 @@ system:
             control_state.capture_mode = False
             control_state.running = True
             control_state.current = "Demo App"
+            control_state.current_art = "/art/demo-app.png"
             loading = read_sse_payload(f"{web_url}/events")
 
             control_state.running = False
             control_state.current = None
+            control_state.current_art = None
             control_state.last_event = {
                 "kind": "unknown-card",
                 "uid": "DEADBEEF",
@@ -222,12 +247,114 @@ system:
         "kind": "loading",
         "title": "Demo App",
         "body": "Launching now.",
+        "art": "/art/demo-app.png",
     }
     assert unknown["kiosk"] == {
         "kind": "unknown-card",
         "title": "Ask a grown-up",
         "body": "That card is not set up yet.",
     }
+
+
+def test_enroll_progress_is_visible_over_sse_while_post_is_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog_path = tmp_path / "catalog.yaml"
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        """
+system:
+  unlock: "ff-ee-dd"
+""",
+        encoding="utf-8",
+    )
+    catalog_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: marble
+    label: Marble
+    type: exec
+    bundled: false
+    install:
+      apt: [marble]
+    cmd: [marble]
+    art: /art/marble.png
+""",
+        encoding="utf-8",
+    )
+    control_state = FakeControlState(unlocked=True, capture_uid="aa-bb-cc")
+    installing = threading.Event()
+    release = threading.Event()
+    responses: list[str] = []
+
+    def fake_enroll_card(uid: str, title, **kwargs):
+        yield InstallProgress(
+            step="installing",
+            message="Installing Marble via apt",
+            manager="apt",
+            packages=("marble",),
+        )
+        installing.set()
+        assert release.wait(timeout=1.0)
+        yield InstallProgress(
+            step="bound",
+            message="Bound AABBCC to marble",
+            packages=("marble",),
+        )
+
+    monkeypatch.setattr(web_module, "enroll_card", fake_enroll_card)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            post_thread = threading.Thread(
+                target=lambda: responses.append(
+                    http_post(f"{web_url}/titles/marble/enroll", {})
+                ),
+                daemon=True,
+            )
+            post_thread.start()
+            assert installing.wait(timeout=1.0)
+
+            payload = read_sse_payload(f"{web_url}/events")
+
+            release.set()
+            post_thread.join(timeout=1.0)
+
+    assert payload["operation"] == {
+        "kind": "loading",
+        "title": "Marble",
+        "message": "Installing Marble via apt",
+        "art": "/art/marble.png",
+    }
+    assert payload["kiosk"] == {
+        "kind": "loading",
+        "title": "Marble",
+        "body": "Installing Marble via apt",
+        "art": "/art/marble.png",
+    }
+    assert responses == [responses[0]]
+
+
+def test_kiosk_page_uses_dedicated_layout_and_reconnect_handler(
+    tmp_path: Path,
+) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    control_state = FakeControlState(unlocked=False)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            body = http_get(f"{web_url}/kiosk")
+
+    assert "Live mode:" not in body
+    assert "ChipBit Kiosk" not in body
+    assert "events.onerror" in body
+    assert "Reconnecting to ChipBit" in body
 
 
 @contextmanager
