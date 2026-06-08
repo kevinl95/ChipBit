@@ -1,0 +1,140 @@
+# ChipBit catalog — the master list of available titles.
+#
+# This file is the single source of truth for BOTH:
+#   * the image build  — CustomPiOS bakes in every title with `bundled: true`
+#   * the runtime       — anything else installs on demand when a card is enrolled
+# So "being less opinionated about what's baked in" is just flipping `bundled`.
+#
+# cards.yaml references entries here by `id`; a card is just a pointer
+# (uid -> catalog id), and all launch detail lives here.
+#
+# Field contract:
+#   settings.games_root
+#                    absolute root for parent-supplied content exposed via
+#                    the share / USB ingest workflow.
+#   id        (req)  stable key, referenced by cards.yaml
+#   label     (req)  display name in the enroll UI and loading screen
+#   type      (req)  scummvm | dosbox | exec | web | ruffle
+#   bundled   (req)  true = pre-installed in the image; false = install on enroll
+#   install          declarative install spec: a map of manager -> packages.
+#                    Only `apt`, `flatpak`, `pip` are honored. NEVER shell —
+#                    so it's safe to honor even from imported card packs, and
+#                    package-name drift (chromium vs chromium-browser) is a
+#                    one-line fix here. Omit for engine titles and web (their
+#                    engines/the browser are base dependencies in the image).
+#   data             "required" when the parent must supply content (game data
+#                    files / .swf). Enroll will not bind the card until it's
+#                    present — same rule as a failed install.
+#   data_dir         optional content directory override for scummvm titles;
+#                    defaults to `scummvm/<id>` under `settings.games_root`.
+#   Launch target (by type):
+#     scummvm -> game_id + data_dir
+#                `id` names the folder/UI key; `game_id` is ScummVM's internal
+#                detector/launcher id. They are never interchangeable.
+#     dosbox  -> conf            (path under settings.games_root)
+#     exec    -> cmd             (argv list, never a shell string)
+#     web     -> url + allowlist
+#     ruffle  -> swf             (path under settings.games_root)
+#   Optional curation metadata (shown when browsing to enroll):
+#     subject, min_age, blurb, art
+#
+# NOTE: the engines themselves (scummvm, dosbox-staging, ruffle) and the kiosk
+# browser are base dependencies installed by the CustomPiOS module, not titles
+# here. The catalog lists only user-facing titles.
+
+meta:
+  catalog_version: 1
+
+settings:
+  games_root: /games
+
+titles:
+
+  # --- Bundled native apps (baked into the image) -------------------------
+  - id: gcompris
+    label: "GCompris"
+    type: exec
+    bundled: true
+    install: { apt: [gcompris-qt] }
+    cmd: ["gcompris-qt", "--fullscreen"]
+    subject: general
+    min_age: 2
+    blurb: "100+ learning activities for ages 2-10."
+    art: gcompris.png
+
+  - id: tuxpaint
+    label: "Tux Paint"
+    type: exec
+    bundled: true
+    install: { apt: [tuxpaint, tuxpaint-stamps-default] }
+    cmd: ["tuxpaint", "--fullscreen"]
+    subject: art
+    min_age: 3
+    art: tuxpaint.png
+
+  # --- Lazy native apps (install on first enroll) -------------------------
+  - id: marble
+    label: "Marble (Globe)"
+    type: exec
+    bundled: false
+    install: { apt: [marble] }
+    cmd: ["marble", "--fullscreen"]
+    subject: geography
+    min_age: 6
+    blurb: "Spin a 3D globe and explore the world."
+    art: marble.png
+
+  - id: kstars
+    label: "KStars (Planetarium)"
+    type: exec
+    bundled: false
+    install: { apt: [kstars] }
+    cmd: ["kstars"]
+    subject: astronomy
+    min_age: 8
+    art: kstars.png
+
+  # --- ScummVM titles (engine is a base dep; parent supplies data) --------
+  - id: puttmoon
+    label: "Putt-Putt Goes to the Moon"
+    type: scummvm
+    bundled: false        # nothing to install; gated on data instead
+    data: required
+    game_id: puttmoon
+    data_dir: scummvm/puttmoon
+    subject: adventure
+    min_age: 3
+    art: putt-moon.png
+
+  # --- DOSBox titles (engine base; parent supplies data) ------------------
+  - id: readerrabbit-dos
+    label: "Reader Rabbit (DOS)"
+    type: dosbox
+    bundled: false
+    data: required
+    conf: readerrabbit/rr.conf
+    subject: reading
+    min_age: 4
+    art: reader-rabbit.png
+
+  # --- Web (browser is base; allowlist-gated) -----------------------------
+  - id: pbskids
+    label: "PBS Kids"
+    type: web
+    bundled: true
+    url: "https://pbskids.org/games/"
+    allowlist: ["pbskids.org", "*.pbskids.org"]
+    subject: general
+    min_age: 3
+    art: pbskids.png
+
+  # --- Ruffle / Flash preservation (engine base; parent supplies .swf) ----
+  - id: mathblaster-flash
+    label: "Math Blaster (Flash)"
+    type: ruffle
+    bundled: false
+    data: required
+    swf: flash/mathblaster.swf
+    subject: math
+    min_age: 6
+    art: mathblaster.png

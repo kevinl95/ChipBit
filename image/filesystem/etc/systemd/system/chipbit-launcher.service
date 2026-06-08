@@ -1,0 +1,35 @@
+[Unit]
+Description=ChipBit Launcher Daemon
+Documentation=https://github.com/chipbit/chipbit
+After=network.target chipbit-web.service
+# Wait for the RFID reader udev device node before starting.
+After=dev-input-chipbit\x2drfid.device
+
+[Service]
+Type=simple
+User=chipbit
+Group=chipbit
+# Supplementary groups: input for evdev, audio/video for launched apps.
+SupplementaryGroups=input audio video
+
+ExecStart=/usr/local/bin/chipbit-launcher \
+    --catalog /usr/share/chipbit/catalog.yaml \
+    --cards /var/lib/chipbit/cards.yaml \
+    --reader-device /dev/input/chipbit-rfid \
+    --control-host 127.0.0.1 \
+    --control-port 8765 \
+    --chromium-bin chromium-browser \
+    --ruffle-bin /usr/local/bin/ruffle \
+    --allow-shutdown
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Keep the service alive even when the RFID reader is unplugged;
+# EvdevReader reconnects automatically.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

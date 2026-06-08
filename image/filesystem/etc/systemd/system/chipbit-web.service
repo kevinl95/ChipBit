@@ -1,0 +1,24 @@
+[Unit]
+Description=ChipBit Parent Console and Kiosk Shell
+Documentation=https://github.com/chipbit/chipbit
+After=network.target
+
+[Service]
+Type=simple
+User=chipbit
+Group=chipbit
+
+ExecStart=/usr/local/bin/chipbit-web \
+    --catalog /usr/share/chipbit/catalog.yaml \
+    --cards /var/lib/chipbit/cards.yaml \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --control-url http://127.0.0.1:8765
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

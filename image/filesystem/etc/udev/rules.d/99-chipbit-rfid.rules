@@ -1,0 +1,52 @@
+# ChipBit RFID reader udev rules.
+#
+# Creates a stable symlink /dev/input/chipbit-rfid → the reader's evdev node,
+# owned by the chipbit group so chipbit-launcher can open it without root.
+#
+# Each rule matches one supported reader by USB vendor:product ID and the
+# kernel's ID_INPUT_KEYBOARD flag (set for HID keyboard-emulation readers).
+#
+# Adding a new reader:
+#   1. Plug it in and run:  lsusb | grep -i "rfid\|card\|reader"
+#   2. Note the ID (e.g. "0416:f200") and add a rule below following the same
+#      pattern.  Then reload udev:  sudo udevadm control --reload-rules
+#
+# ---------------------------------------------------------------------------
+# ACR122U / ACR1252U (ACS — Advanced Card Systems, VID 072f)
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="072f", ATTRS{idProduct}=="2200", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
+
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="072f", ATTRS{idProduct}=="90cc", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# Generic cheap USB HID RFID dongle (0xffff:0x0035 — very common on Amazon)
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="ffff", ATTRS{idProduct}=="0035", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# Ehuoyan / SL600 RFID reader (08ff:0009)
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="08ff", ATTRS{idProduct}=="0009", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# Neuftech USB RFID reader (0416:f200)
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="0416", ATTRS{idProduct}=="f200", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
+
+# ---------------------------------------------------------------------------
+# RFIDeas pcProx (0c27:3bfa)
+SUBSYSTEM=="input", ACTION=="add", \
+    ATTRS{idVendor}=="0c27", ATTRS{idProduct}=="3bfa", \
+    ENV{ID_INPUT_KEYBOARD}=="1", \
+    SYMLINK+="input/chipbit-rfid", GROUP="chipbit", MODE="0660"
