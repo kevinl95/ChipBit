@@ -94,9 +94,6 @@ install -m 0755 "${HELPER}" /usr/share/chipbit/emit_bundled_apt.py
 systemctl enable chipbit-launcher.service
 systemctl enable chipbit-web.service
 
-# Reload udev so the RFID rules take effect on next boot.
-udevadm control --reload-rules 2>/dev/null || true
-
 # ---------------------------------------------------------------------------
 # 8. Clean up
 # ---------------------------------------------------------------------------

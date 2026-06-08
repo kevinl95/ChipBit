@@ -22,7 +22,7 @@ from .launcher import (
     poll_config,
 )
 from .models import ConfigLoadError, load_cards, load_catalog
-from .reader import EvdevReader, MockReader, pump_reader
+from .reader import EvdevReader, MockReader, find_rfid_reader, pump_reader
 from .web import create_web_server
 
 log = logging.getLogger(__name__)
@@ -73,7 +73,11 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.mock_reader is None and not args.reader_device:
-        parser.error("--reader-device is required unless --mock-reader is used")
+        args.reader_device = find_rfid_reader()
+        if not args.reader_device:
+            parser.error(
+                "no RFID reader detected; plug one in or use --reader-device to specify the path"
+            )
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

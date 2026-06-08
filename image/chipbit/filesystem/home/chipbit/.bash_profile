@@ -18,6 +18,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     # --kiosk: fullscreen, no address bar, no title bar.
     # No -s flag: disables VT switching (prevents child from escaping to a shell).
     exec cage -- chromium-browser \
+        --ozone-platform=wayland \
         --kiosk \
         --noerrdialogs \
         --disable-infobars \

@@ -3,75 +3,167 @@
 This directory is a **CustomPiOS module** that turns a stock Raspberry Pi OS
 Bookworm (arm64) image into a ChipBit kiosk appliance.
 
-## Module layout
+## Layout
 
 ```
 image/
-  config.sh                        # Build-time overrideable variables
-  start_chipbit.sh                 # Chroot install script (run by CustomPiOS)
+  README.md                                    # this file
   build_helpers/
-    emit_bundled_apt.py            # Parses catalog.yaml → apt list for bundled titles
-  filesystem/                      # Overlaid onto the target rootfs
-    etc/
-      systemd/system/
-        chipbit-launcher.service   # Launcher daemon (evdev reader + process mgmt)
-        chipbit-web.service        # Parent console + kiosk shell web service
-        getty@tty1.service.d/
-          autologin.conf           # Autologin to the chipbit kiosk user on tty1
-      udev/rules.d/
-        99-chipbit-rfid.rules      # Stable /dev/input/chipbit-rfid symlink
-    home/chipbit/
-      .bash_profile                # Starts cage → chromium kiosk on tty1
-    usr/share/chipbit/
-      catalog.yaml                 # Frozen catalog baked into the image
-      emit_bundled_apt.py          # Helper available post-install for admin use
+    emit_bundled_apt.py                        # catalog → apt package list (also tested in CI)
+  chipbit/                                     # CustomPiOS module (MODULES=chipbit)
+    config.sh                                  # build-time overrideable variables
+    start_chipbit.sh                           # chroot install script
+    filesystem/                               # overlaid onto the target rootfs
+      etc/
+        systemd/system/
+          chipbit-launcher.service
+          chipbit-web.service
+          getty@tty1.service.d/
+            autologin.conf                     # autologin → chipbit user on tty1
+      home/chipbit/
+        .bash_profile                          # cage → chromium --kiosk on tty1
+      usr/share/chipbit/
+        catalog.yaml                           # frozen catalog baked into the image
+        emit_bundled_apt.py                    # available post-install for admin use
 ```
 
-## What the module does
+---
 
-1. **Installs base engines** — `cage`, `scummvm`, `dosbox-staging`,
-   `chromium-browser`, and Ruffle (arm64 binary from GitHub releases).
-2. **Installs bundled native titles** — `emit_bundled_apt.py` parses
-   `catalog.yaml` and produces the apt package list for every title with
-   `bundled: true`, keeping the catalog as the single source of truth.
-3. **Creates the `chipbit` system user** (UID/GID 900) with `input`, `audio`,
-   and `video` group membership so the launcher can open the RFID reader and
-   launched apps can use sound and graphics.
-4. **Installs ChipBit from PyPI** at the pinned version in `config.sh`.
-5. **Enables systemd services** — `chipbit-launcher` and `chipbit-web` start
-   at boot as the `chipbit` user.
-6. **Wires up the RFID reader** — udev rules create
-   `/dev/input/chipbit-rfid → /dev/input/eventN` for every supported HID
-   keyboard-mode reader; the launcher service points to this stable path so
-   production reader selection never lives in Python code.
-7. **Boots into the kiosk** — getty autologin on tty1 → `.bash_profile` →
-   `cage -- chromium-browser --kiosk http://127.0.0.1:8080/kiosk`.
+## Local development (no Pi required)
 
-## Building
+### 1 — Install
 
 ```bash
-# From the repo root — substitute your CustomPiOS checkout path.
-export MODULES="chipbit"
-export MODULESPATH="$(pwd)/image"
-export CHIPBIT_VERSION="0.1.0"   # overrides config.sh default
-./BuildImage.sh
+pip install -e './launcher[dev]'
 ```
 
-## Adding a new RFID reader
+Or with Make:
 
-1. Plug the reader in and run `lsusb` to find the vendor:product ID.
-2. Add a rule to
-   `filesystem/etc/udev/rules.d/99-chipbit-rfid.rules` following the existing
-   pattern.
-3. Rebuild the image (or `scp` the updated rules file and run
-   `sudo udevadm control --reload-rules` on a running Pi).
+```bash
+make test       # installs, runs ruff + pytest
+```
+
+### 2 — Run the full stack in mock mode
+
+Open **two terminals** from the repo root.
+
+**Terminal A — launcher daemon** (reads UIDs from stdin, one per line):
+
+```bash
+chipbit-launcher \
+  --mock-reader \
+  --catalog catalog/catalog.yaml \
+  --cards /tmp/chipbit-cards.yaml
+```
+
+**Terminal B — web service** (parent console + kiosk shell):
+
+```bash
+chipbit-web \
+  --catalog catalog/catalog.yaml \
+  --cards /tmp/chipbit-cards.yaml
+```
+
+Then open **http://127.0.0.1:8080** in a browser.
+
+### 3 — Walk through the first-run flow
+
+Because `/tmp/chipbit-cards.yaml` doesn't exist yet, the device is in
+first-run mode. The web UI shows only one option: "tap a card to make it the
+admin card."
+
+In Terminal A, simulate a card tap by typing a UID and pressing Enter:
+
+```
+AABBCCDD
+```
+
+The launcher logs `auto-enrolled admin card AABBCCDD` and the web UI unlocks.
+You can now browse the catalog and enroll more cards:
+
+```
+11223344    ← tap another card; the UI prompts you to assign it a title
+```
+
+### 4 — Simulate the kiosk shell
+
+The kiosk page (what cage + chromium would render on the Pi) is at:
+
+```
+http://127.0.0.1:8080/kiosk
+```
+
+It updates in real time via SSE as you type UIDs in the launcher terminal.
+
+---
+
+## Building the image
+
+### Prerequisites
+
+- [CustomPiOS](https://github.com/guysoft/CustomPiOS) checked out locally
+- A Raspberry Pi OS **Bookworm lite arm64** base image (`.img.xz`) — Lite is
+  intentional: `cage` is a single-application Wayland compositor that talks
+  directly to the GPU's DRM/KMS layer and needs no desktop environment
+- Docker **or** a Linux host with QEMU user-mode binfmt registered
+
+### Build
+
+```bash
+# From the CustomPiOS checkout directory:
+sudo \
+  MODULES="chipbit" \
+  MODULESPATH="/path/to/chipbit-repo/image" \
+  CHIPBIT_VERSION="0.1.0" \
+  RUFFLE_TAG="2024-10-13" \
+  ./src/build_dist_image.sh /path/to/base-image.img.xz
+```
+
+CustomPiOS overlays `image/chipbit/filesystem/` onto the rootfs, then runs
+`image/chipbit/start_chipbit.sh` inside the chroot to install engines,
+bundled titles, and ChipBit itself.
+
+The resulting `.img` can be written to an SD card with `dd` or Raspberry Pi
+Imager.
+
+### Overrideable variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CHIPBIT_VERSION` | `0.1.0` | PyPI version of `chipbit` to install |
+| `RUFFLE_TAG` | `2024-10-13` | Ruffle GitHub release tag |
+| `CHIPBIT_UID` / `CHIPBIT_GID` | `900` | UID/GID of the kiosk system user |
+| `CHIPBIT_WEB_PORT` | `8080` | Web service port |
+| `CHIPBIT_CONTROL_PORT` | `8765` | Launcher control API port |
+
+---
+
+## What `start_chipbit.sh` does
+
+1. Installs `cage`, `scummvm`, `dosbox-staging`, `chromium-browser`, and Ruffle.
+2. Runs `emit_bundled_apt.py catalog.yaml` to get the apt list for every title
+   with `bundled: true` — the catalog is the single source of truth.
+3. Creates the `chipbit` system user (UID/GID 900) in `input`, `audio`, and
+   `video` groups.
+4. Runs `pip install chipbit==<version>`.
+5. Enables `chipbit-launcher.service` and `chipbit-web.service`.
+
+## RFID reader auto-detection
+
+No vendor/product IDs are baked into the image. At startup, `chipbit-launcher`
+scans every evdev device and selects the first one whose key-capability set
+matches the shape of an HID keyboard-mode RFID reader: digit keys + Enter, no
+mouse/joystick axes, no full-keyboard markers (ESC, Tab, F-keys, etc.). The
+`chipbit` user's `input` group membership gives access to all `/dev/input/event*`
+nodes.
+
+Use `--reader-device /dev/input/eventN` to override auto-detection.
 
 ## Keeping the catalog in sync
 
-`filesystem/usr/share/chipbit/catalog.yaml` is a copy of `catalog/catalog.yaml`
-frozen at image-build time.  When you update the catalog, re-copy it before
-building:
+`chipbit/filesystem/usr/share/chipbit/catalog.yaml` is a copy of
+`catalog/catalog.yaml` frozen at image-build time. Re-copy before building:
 
 ```bash
-cp catalog/catalog.yaml image/filesystem/usr/share/chipbit/catalog.yaml
+cp catalog/catalog.yaml image/chipbit/filesystem/usr/share/chipbit/catalog.yaml
 ```

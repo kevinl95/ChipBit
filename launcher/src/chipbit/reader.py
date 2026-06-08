@@ -33,9 +33,100 @@ if ecodes is not None:
     )
     _KEYMAP.update({getattr(ecodes, f"KEY_{letter}"): letter for letter in "ABCDEF"})
     _ENTER = {ecodes.KEY_ENTER, ecodes.KEY_KPENTER}
+
+    # Keys present on every full keyboard but never on a bare RFID reader.
+    # If a device has any of these we know it is not an RFID reader.
+    _FULL_KEYBOARD_MARKERS: frozenset[int] = frozenset(
+        filter(
+            None,
+            [
+                getattr(ecodes, k, None)
+                for k in (
+                    "KEY_ESC",
+                    "KEY_TAB",
+                    "KEY_SPACE",
+                    "KEY_BACKSPACE",
+                    "KEY_F1",
+                    "KEY_LEFTCTRL",
+                    "KEY_RIGHTCTRL",
+                    "KEY_LEFTALT",
+                    "KEY_RIGHTALT",
+                    # Non-hex letters that no RFID reader would emit
+                    "KEY_Q",
+                    "KEY_W",
+                    "KEY_T",
+                    "KEY_Y",
+                    "KEY_U",
+                    "KEY_I",
+                    "KEY_O",
+                    "KEY_P",
+                )
+            ],
+        )
+    )
 else:  # pragma: no cover - only used if evdev import fails
     _KEYMAP: dict[int, str] = {}
     _ENTER: set[int] = set()
+    _FULL_KEYBOARD_MARKERS: frozenset[int] = frozenset()
+
+
+def find_rfid_reader(
+    *,
+    list_devices: Callable[[], Iterable[str]] | None = None,
+    input_device_factory: Callable[[str], object] | None = None,
+) -> str | None:
+    """Return the path of the first attached RFID reader, or None.
+
+    Identifies RFID readers by their evdev capability shape: they look like
+    HID keyboards but carry only digit, hex-letter, and Enter keys — not the
+    full set present on a real keyboard.  Mouse and joystick devices (EV_REL /
+    EV_ABS) are rejected immediately.
+
+    Both parameters exist for testing only; production code leaves them None.
+    """
+    if evdev is None or ecodes is None:
+        return None
+
+    _list = list_devices or evdev.list_devices
+    _factory = input_device_factory or evdev.InputDevice
+
+    for path in sorted(_list()):
+        dev = None
+        try:
+            dev = _factory(path)
+            caps = dev.capabilities()
+        except OSError:
+            continue
+        finally:
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:  # pragma: no cover
+                    pass
+
+        if _looks_like_rfid_reader(caps):
+            log.info("auto-detected RFID reader: %s", path)
+            return path
+
+    return None
+
+
+def _looks_like_rfid_reader(caps: dict) -> bool:
+    if ecodes.EV_KEY not in caps:
+        return False
+    if ecodes.EV_REL in caps or ecodes.EV_ABS in caps:
+        return False
+
+    keys = frozenset(caps[ecodes.EV_KEY])
+
+    if not (keys & _ENTER):
+        return False
+    if not (keys & frozenset(_KEYMAP)):
+        return False
+    if keys & _FULL_KEYBOARD_MARKERS:
+        return False
+
+    return True
 
 
 class MockReader:
