@@ -1,3 +1,5 @@
+import threading
+
 from chipbit import __version__
 from chipbit.cli import launcher_main, web_main
 
@@ -42,6 +44,40 @@ titles:
     )
 
 
-def test_web_main_runs(capsys) -> None:
-    assert web_main([]) == 0
-    assert "M4" in capsys.readouterr().out
+def test_web_main_runs(tmp_path) -> None:
+    catalog_path = tmp_path / "catalog.yaml"
+    stop = threading.Event()
+    stop.set()
+
+    catalog_path.write_text(
+        """
+meta:
+      catalog_version: 1
+settings:
+      games_root: /games
+titles:
+      - id: demo
+        label: Demo
+        type: exec
+        bundled: true
+        cmd: [demo-app]
+""",
+        encoding="utf-8",
+    )
+
+    assert (
+        web_main(
+            [
+                "--catalog",
+                str(catalog_path),
+                "--cards",
+                str(tmp_path / "cards.yaml"),
+                "--control-url",
+                "http://127.0.0.1:8765",
+                "--port",
+                "0",
+            ],
+            stop_event=stop,
+        )
+        == 0
+    )

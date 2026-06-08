@@ -20,7 +20,9 @@ from .launcher import (
     LaunchSettings,
     poll_config,
 )
+from .models import ConfigLoadError, load_cards, load_catalog
 from .reader import EvdevReader, MockReader, pump_reader
+from .web import create_web_server
 
 log = logging.getLogger(__name__)
 
@@ -130,18 +132,73 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def web_main(argv: Sequence[str] | None = None) -> int:
-    """Run the placeholder web entry point for milestone M0."""
+def web_main(
+    argv: Sequence[str] | None = None,
+    *,
+    stop_event: threading.Event | None = None,
+) -> int:
+    """Run the ChipBit parent console and kiosk shell service."""
     parser = argparse.ArgumentParser(prog="chipbit-web")
+    parser.add_argument("--catalog", type=Path, default=Path("catalog/catalog.yaml"))
+    parser.add_argument("--cards", type=Path, default=Path("cards.yaml"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--control-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.parse_args(list(argv) if argv is not None else None)
-    print("ChipBit web scaffold installed. Service implementation lands in M4.")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    try:
+        load_catalog(args.catalog)
+        load_cards(args.cards)
+    except ConfigLoadError as exc:
+        log.error("could not load initial web config: %s", exc)
+        return 1
+
+    httpd = create_web_server(
+        args.host,
+        args.port,
+        catalog_path=args.catalog,
+        cards_path=args.cards,
+        control_base_url=args.control_url,
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    log.info(
+        "web service on %s:%d -> %s",
+        args.host,
+        httpd.server_port,
+        args.control_url,
+    )
+
+    stop = stop_event or threading.Event()
+
+    def shutdown(signum: int, frame: object | None) -> None:
+        log.info("signal %d -> shutting down web service", signum)
+        stop.set()
+
+    if stop_event is None:
+        signal.signal(signal.SIGINT, shutdown)
+        signal.signal(signal.SIGTERM, shutdown)
+
+    try:
+        while not stop.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        stop.set()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
     return 0
 
 
