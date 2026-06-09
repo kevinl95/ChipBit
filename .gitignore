@@ -223,3 +223,9 @@ __marimo__/
 
 # Text editor
 .vscode/
+# CustomPiOS build: machine-local files (not committed)
+image/custompios_path
+image/config.local
+image/workspace*/
+# Pre-built wheel staged into the filesystem overlay before the chroot runs
+image/modules/chipbit/filesystem/usr/share/chipbit/chipbit-*.whl

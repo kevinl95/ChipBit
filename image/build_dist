@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Entry point for building the ChipBit image with CustomPiOS.
+# Usage: sudo bash image/build_dist [variant]
+#
+# Before running, create image/custompios_path and image/config.local:
+#
+#   echo "/path/to/CustomPiOS/src" > image/custompios_path
+#   echo 'export BASE_ZIP_IMG="/path/to/base-image.img.xz"' > image/config.local
+#
+set -euo pipefail
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CUSTOMPIOS_PATH_FILE="${DIR}/custompios_path"
+
+if [ ! -f "${CUSTOMPIOS_PATH_FILE}" ]; then
+    echo "error: ${CUSTOMPIOS_PATH_FILE} not found."
+    echo "Create it with the path to your CustomPiOS src/ directory:"
+    echo "  echo \"/path/to/CustomPiOS/src\" > image/custompios_path"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-step: build the chipbit wheel from source so the chroot can install it
+# without a PyPI connection.  The wheel lands in the filesystem overlay at
+# filesystem/tmp/ → /tmp/ inside the chroot.
+# ---------------------------------------------------------------------------
+WHEEL_DIR="${DIR}/modules/chipbit/filesystem/usr/share/chipbit"
+mkdir -p "${WHEEL_DIR}"
+rm -f "${WHEEL_DIR}"/chipbit-*.whl
+
+echo "Building chipbit wheel from source..."
+python3 -m pip wheel "${DIR}/../launcher" --no-deps --no-build-isolation \
+    -w "${WHEEL_DIR}" -q
+echo "Wheel ready: $(ls "${WHEEL_DIR}"/chipbit-*.whl)"
+
+export DIST_PATH="${DIR}"
+export CUSTOM_PI_OS_PATH="$(<"${CUSTOMPIOS_PATH_FILE}")"
+export PATH="$PATH:${CUSTOM_PI_OS_PATH}"
+
+exec "${CUSTOM_PI_OS_PATH}/build_custom_os" "$@"

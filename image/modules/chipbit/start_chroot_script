@@ -3,6 +3,17 @@
 # Installs engines, creates the kiosk user, installs ChipBit, enables services.
 set -euo pipefail
 
+# CustomPiOS stages the module's filesystem/ overlay as /filesystem/ inside the
+# chroot (cp -r with no trailing slash copies the dir itself, not its contents).
+# Fix ownership before merging: overlay files are owned by the dev user on the
+# host, and cp -a preserves that, which would corrupt /etc/, /usr/, etc. inside
+# the chroot and break apt's GPG verification.
+if [ -d /filesystem ]; then
+    chown -R root:root /filesystem
+    cp -a /filesystem/. /
+    rm -rf /filesystem
+fi
+
 # Load module config (sourced by CustomPiOS before calling this script).
 CHIPBIT_VERSION="${CHIPBIT_VERSION:-0.1.0}"
 RUFFLE_TAG="${RUFFLE_TAG:-2024-10-13}"
@@ -14,23 +25,53 @@ CHIPBIT_CONTROL_PORT="${CHIPBIT_CONTROL_PORT:-8765}"
 # ---------------------------------------------------------------------------
 # 1. Base engines and compositor
 # ---------------------------------------------------------------------------
+# Ensure /tmp is writable before apt runs.  Pi OS Bookworm mounts /tmp as
+# tmpfs at runtime via systemd; in a chroot that service doesn't start, so
+# we fix the mode explicitly.
+chmod 1777 /tmp
+
 apt-get update -y
 apt-get install -y --no-install-recommends \
     cage \
     scummvm \
-    dosbox-staging \
     chromium-browser \
     python3-pip \
     python3-yaml \
     curl \
     ca-certificates
 
-# Ruffle (Rust Flash player — no apt package; download arm64 binary from GitHub).
-RUFFLE_ARCHIVE="ruffle-${RUFFLE_TAG}-linux-aarch64.tar.gz"
-RUFFLE_URL="https://github.com/ruffle-rs/ruffle/releases/download/${RUFFLE_TAG}/${RUFFLE_ARCHIVE}"
-echo "Downloading Ruffle ${RUFFLE_TAG}..."
-curl -fsSL "${RUFFLE_URL}" | tar -xz -C /usr/local/bin ruffle
-chmod 0755 /usr/local/bin/ruffle
+# dosbox-staging is not available in all Pi OS repo flavours (notably armhf).
+# Fall back to the original dosbox and symlink it so the launcher service
+# always resolves --dosbox-bin dosbox-staging without extra config.
+if apt-cache show dosbox-staging > /dev/null 2>&1; then
+    apt-get install -y --no-install-recommends dosbox-staging
+else
+    apt-get install -y --no-install-recommends dosbox
+    ln -sf "$(command -v dosbox)" /usr/local/bin/dosbox-staging
+fi
+
+# Ruffle (Rust Flash player — no apt package; GitHub releases only publish
+# aarch64 and x86_64 binaries, not armhf/armv7l).
+case "$(uname -m)" in
+    aarch64) RUFFLE_ARCH="aarch64" ;;
+    x86_64)  RUFFLE_ARCH="x86_64"  ;;
+    *)
+        echo "Ruffle: no binary published for $(uname -m) — skipping."
+        echo "Flash (ruffle) titles will not work on this image."
+        RUFFLE_ARCH=""
+        ;;
+esac
+if [ -n "${RUFFLE_ARCH}" ]; then
+    RUFFLE_ARCHIVE="ruffle-${RUFFLE_TAG}-linux-${RUFFLE_ARCH}.tar.gz"
+    RUFFLE_URL="https://github.com/ruffle-rs/ruffle/releases/download/${RUFFLE_TAG}/${RUFFLE_ARCHIVE}"
+    echo "Downloading Ruffle ${RUFFLE_TAG} (${RUFFLE_ARCH})..."
+    if curl -fsSL "${RUFFLE_URL}" | tar -xz -C /usr/local/bin ruffle; then
+        chmod 0755 /usr/local/bin/ruffle
+        echo "Ruffle installed at /usr/local/bin/ruffle"
+    else
+        echo "Warning: Ruffle download failed — Flash titles will not work."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Bundled native titles (from catalog — single source of truth)
@@ -60,6 +101,9 @@ if ! id chipbit &> /dev/null; then
         chipbit
 fi
 
+# Fix ownership of the kiosk user's home files (root-merged above).
+chown chipbit:chipbit /home/chipbit/.bash_profile
+
 # Grant groups needed for evdev, audio, and GPU access.
 for grp in input audio video tty; do
     if getent group "${grp}" > /dev/null; then
@@ -79,23 +123,21 @@ chown chipbit:chipbit /games
 chmod 0755 /games
 
 # ---------------------------------------------------------------------------
-# 5. Install ChipBit from PyPI
+# 5. Install ChipBit from the pre-built wheel staged by build_dist
 # ---------------------------------------------------------------------------
-pip3 install --break-system-packages "chipbit==${CHIPBIT_VERSION}"
+# The wheel was built on the host and landed in the filesystem overlay at
+# filesystem/tmp/; after the overlay merge it's at /tmp/chipbit-*.whl.
+pip3 install --break-system-packages /usr/share/chipbit/chipbit-*.whl
+rm -f /usr/share/chipbit/chipbit-*.whl
 
 # ---------------------------------------------------------------------------
-# 6. Drop the build helper next to the catalog so the admin can re-run it.
-# ---------------------------------------------------------------------------
-install -m 0755 "${HELPER}" /usr/share/chipbit/emit_bundled_apt.py
-
-# ---------------------------------------------------------------------------
-# 7. Enable systemd services
+# 6. Enable systemd services
 # ---------------------------------------------------------------------------
 systemctl enable chipbit-launcher.service
 systemctl enable chipbit-web.service
 
 # ---------------------------------------------------------------------------
-# 8. Clean up
+# 7. Clean up
 # ---------------------------------------------------------------------------
 apt-get clean
 rm -rf /var/lib/apt/lists/*

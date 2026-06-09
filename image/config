@@ -1,0 +1,19 @@
+export DIST_NAME="ChipBit"
+export DIST_VERSION="0.1.0"
+
+# base must be the parent module — it sets BASE_ROOT_PARTITION, mounts the
+# image, configures QEMU, and runs child modules inside the chroot.
+export MODULES="base(chipbit)"
+
+# Architecture: armv7l (armhf) for Pi 3/400/older, arm64 for Pi 4/5/500.
+# Set in config.local to match your downloaded base image.
+[ -n "$BASE_ARCH" ] || BASE_ARCH=armv7l
+
+# Extra space added to the root partition before the chroot runs.
+# Needs to cover: cage, scummvm, chromium, dosbox, GCompris, Tuxpaint,
+# python3, chipbit, and their deps.  3 GB is a safe margin.
+[ -n "$BASE_IMAGE_ENLARGEROOT" ] || BASE_IMAGE_ENLARGEROOT=3000
+
+# After the build, shrink back to used space + this headroom (MB).
+# Leaves ~500 MB free on first boot for cards.yaml, apt cache, etc.
+[ -n "$BASE_IMAGE_RESIZEROOT" ] || BASE_IMAGE_RESIZEROOT=500

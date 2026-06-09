@@ -7,24 +7,29 @@ Bookworm (arm64) image into a ChipBit kiosk appliance.
 
 ```
 image/
-  README.md                                    # this file
+  README.md
+  build_dist                                   # entry point: sets DIST_PATH, calls CustomPiOS
+  config                                       # distro config (MODULES=chipbit, BASE_ARCH, …)
+  custompios_path                              # ← not committed; path to your CustomPiOS src/
+  config.local                                 # ← not committed; your BASE_ZIP_IMG override
   build_helpers/
-    emit_bundled_apt.py                        # catalog → apt package list (also tested in CI)
-  chipbit/                                     # CustomPiOS module (MODULES=chipbit)
-    config.sh                                  # build-time overrideable variables
-    start_chipbit.sh                           # chroot install script
-    filesystem/                               # overlaid onto the target rootfs
-      etc/
-        systemd/system/
-          chipbit-launcher.service
-          chipbit-web.service
-          getty@tty1.service.d/
-            autologin.conf                     # autologin → chipbit user on tty1
-      home/chipbit/
-        .bash_profile                          # cage → chromium --kiosk on tty1
-      usr/share/chipbit/
-        catalog.yaml                           # frozen catalog baked into the image
-        emit_bundled_apt.py                    # available post-install for admin use
+    emit_bundled_apt.py                        # catalog → apt list (standalone, tested in CI)
+  modules/
+    chipbit/                                   # CustomPiOS module — found at ${DIST_PATH}/modules/chipbit/
+      config                                   # module-level variables (CHIPBIT_VERSION, …)
+      start_chroot_script                      # chroot install script (required name)
+      filesystem/                              # overlaid onto the rootfs before the script runs
+        etc/
+          systemd/system/
+            chipbit-launcher.service
+            chipbit-web.service
+            getty@tty1.service.d/
+              autologin.conf                   # autologin → chipbit user on tty1
+        home/chipbit/
+          .bash_profile                        # cage → chromium --kiosk on tty1
+        usr/share/chipbit/
+          catalog.yaml                         # frozen catalog baked into the image
+          emit_bundled_apt.py                  # available post-install for admin use
 ```
 
 ---
@@ -102,29 +107,41 @@ It updates in real time via SSE as you type UIDs in the launcher terminal.
 ### Prerequisites
 
 - [CustomPiOS](https://github.com/guysoft/CustomPiOS) checked out locally
-- A Raspberry Pi OS **Bookworm lite arm64** base image (`.img.xz`) — Lite is
-  intentional: `cage` is a single-application Wayland compositor that talks
-  directly to the GPU's DRM/KMS layer and needs no desktop environment
-- Docker **or** a Linux host with QEMU user-mode binfmt registered
+- A Raspberry Pi OS **Bookworm lite** base image (`.img.xz`) — use **arm64**
+  for Pi 4/5/500, **armhf** for Pi 400 or older hardware. Lite is intentional:
+  `cage` is a single-application Wayland compositor that talks directly to the
+  GPU's DRM/KMS layer and needs no desktop environment
+- A Linux host with `qemu-user-static` and binfmt support installed, or Docker
 
 ### Build
 
+**One-time setup** (from the repo root):
+
 ```bash
-# From the CustomPiOS checkout directory:
-sudo \
-  MODULES="chipbit" \
-  MODULESPATH="/path/to/chipbit-repo/image" \
-  CHIPBIT_VERSION="0.1.0" \
-  RUFFLE_TAG="2024-10-13" \
-  ./src/build_dist_image.sh /path/to/base-image.img.xz
+# 1. Tell the build where your CustomPiOS checkout lives.
+echo "/path/to/CustomPiOS/src" > image/custompios_path
+
+# 2. Tell it where your downloaded Pi OS base image is.
+#    armhf for Pi 3/400/older, arm64 for Pi 4/5/500.
+cat > image/config.local << 'EOF'
+export BASE_ZIP_IMG="/path/to/2026-04-13-raspios-bookworm-armhf-lite.img.xz"
+# export BASE_ARCH=arm64   # uncomment for arm64 image
+EOF
 ```
 
-CustomPiOS overlays `image/chipbit/filesystem/` onto the rootfs, then runs
-`image/chipbit/start_chipbit.sh` inside the chroot to install engines,
-bundled titles, and ChipBit itself.
+**Build:**
 
-The resulting `.img` can be written to an SD card with `dd` or Raspberry Pi
-Imager.
+```bash
+sudo bash image/build_dist
+```
+
+`build_dist` sets `DIST_PATH` (which is what CustomPiOS actually uses) and
+hands off to `build_custom_os`. CustomPiOS copies `modules/chipbit/filesystem/`
+into the chroot as `/filesystem/`; `start_chroot_script` then merges that into
+the root at startup with `cp -a /filesystem/. /`. The Ruffle binary is selected
+automatically for the chroot architecture (aarch64 or x86_64; skipped on armhf).
+
+The resulting `.img` can be written to an SD card with `dd` or Raspberry Pi Imager.
 
 ### Overrideable variables
 
@@ -138,15 +155,15 @@ Imager.
 
 ---
 
-## What `start_chipbit.sh` does
+## What `start_chroot_script` does
 
-1. Installs `cage`, `scummvm`, `dosbox-staging`, `chromium-browser`, and Ruffle.
-2. Runs `emit_bundled_apt.py catalog.yaml` to get the apt list for every title
+1. Merges the `/filesystem/` overlay into `/` (CustomPiOS stages it there, not at root).
+2. Installs `cage`, `scummvm`, `dosbox-staging`, `chromium-browser`, and Ruffle (aarch64/x86_64 only).
+3. Runs `emit_bundled_apt.py catalog.yaml` to get the apt list for every title
    with `bundled: true` — the catalog is the single source of truth.
-3. Creates the `chipbit` system user (UID/GID 900) in `input`, `audio`, and
-   `video` groups.
-4. Runs `pip install chipbit==<version>`.
-5. Enables `chipbit-launcher.service` and `chipbit-web.service`.
+4. Creates the `chipbit` system user (UID/GID 900) in `input`, `audio`, and `video` groups.
+5. Runs `pip install /tmp/chipbit-*.whl` (wheel built from source by `build_dist` — not on PyPI yet).
+6. Enables `chipbit-launcher.service` and `chipbit-web.service`.
 
 ## RFID reader auto-detection
 
@@ -161,9 +178,9 @@ Use `--reader-device /dev/input/eventN` to override auto-detection.
 
 ## Keeping the catalog in sync
 
-`chipbit/filesystem/usr/share/chipbit/catalog.yaml` is a copy of
+`modules/chipbit/filesystem/usr/share/chipbit/catalog.yaml` is a copy of
 `catalog/catalog.yaml` frozen at image-build time. Re-copy before building:
 
 ```bash
-cp catalog/catalog.yaml image/chipbit/filesystem/usr/share/chipbit/catalog.yaml
+cp catalog/catalog.yaml image/modules/chipbit/filesystem/usr/share/chipbit/catalog.yaml
 ```
