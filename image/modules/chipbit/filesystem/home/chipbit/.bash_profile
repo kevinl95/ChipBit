@@ -1,8 +1,12 @@
 # ChipBit kiosk user login profile.
-# On tty1, wait for the web service then launch cage → chromium in kiosk mode.
+# On tty1, set up the Wayland environment and launch cage → chromium in kiosk mode.
 # On any other TTY (SSH, serial) this is a plain login shell.
 
 if [ "$(tty)" = "/dev/tty1" ]; then
+    # Required for Wayland/DRM access without a display manager.
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export LIBSEAT_BACKEND=logind
+
     # Wait up to 30 s for the web service to accept connections.
     _waited=0
     until curl -sf http://127.0.0.1:8080/kiosk > /dev/null 2>&1; do
@@ -15,9 +19,12 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     unset _waited
 
     # cage creates its own Wayland compositor; chromium runs fullscreen inside it.
-    # --kiosk: fullscreen, no address bar, no title bar.
-    # No -s flag: disables VT switching (prevents child from escaping to a shell).
-    exec cage -- chromium-browser \
+    # dbus-run-session gives cage the D-Bus session it needs to talk to logind.
+    # User data goes to /var/lib/chipbit (persistent, chipbit-owned).
+    # Shader cache goes to /tmp so home-dir permissions don't matter.
+    export XDG_CACHE_HOME=/tmp/chipbit-xdg-cache
+    mkdir -p /tmp/chipbit-xdg-cache
+    exec dbus-run-session cage -- chromium-browser \
         --ozone-platform=wayland \
         --kiosk \
         --noerrdialogs \
@@ -25,5 +32,6 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         --no-first-run \
         --disable-features=Translate \
         --check-for-update-interval=31536000 \
+        --user-data-dir=/var/lib/chipbit/chromium \
         http://127.0.0.1:8080/kiosk
 fi

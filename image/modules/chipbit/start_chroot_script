@@ -17,8 +17,8 @@ fi
 # Load module config (sourced by CustomPiOS before calling this script).
 CHIPBIT_VERSION="${CHIPBIT_VERSION:-0.1.0}"
 RUFFLE_TAG="${RUFFLE_TAG:-2024-10-13}"
-CHIPBIT_UID="${CHIPBIT_UID:-900}"
-CHIPBIT_GID="${CHIPBIT_GID:-900}"
+CHIPBIT_UID="${CHIPBIT_UID:-1000}"
+CHIPBIT_GID="${CHIPBIT_GID:-1000}"
 CHIPBIT_WEB_PORT="${CHIPBIT_WEB_PORT:-8080}"
 CHIPBIT_CONTROL_PORT="${CHIPBIT_CONTROL_PORT:-8765}"
 
@@ -33,6 +33,7 @@ chmod 1777 /tmp
 apt-get update -y
 apt-get install -y --no-install-recommends \
     cage \
+    dbus \
     scummvm \
     chromium-browser \
     python3-pip \
@@ -87,6 +88,15 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Kiosk system user
 # ---------------------------------------------------------------------------
+# Pi OS Bookworm base images pre-create a 'pi' user/group at UID/GID 1000.
+# Remove it before creating chipbit so there is no GID/UID collision.
+if getent passwd pi > /dev/null; then
+    userdel -r pi 2>/dev/null || true
+fi
+if getent group pi > /dev/null; then
+    groupdel pi 2>/dev/null || true
+fi
+
 if ! getent group chipbit > /dev/null; then
     groupadd --gid "${CHIPBIT_GID}" chipbit
 fi
@@ -101,19 +111,26 @@ if ! id chipbit &> /dev/null; then
         chipbit
 fi
 
-# Fix ownership of the kiosk user's home files (root-merged above).
-chown chipbit:chipbit /home/chipbit/.bash_profile
+# Fix ownership of the entire home directory (cp -a above created it as root:root).
+chown -R chipbit:chipbit /home/chipbit
+chmod 700 /home/chipbit
+
+# Set a recovery password so the console is accessible if the kiosk fails.
+# Override at build time with CHIPBIT_PASSWORD env var; default is "chipbit".
+echo "chipbit:${CHIPBIT_PASSWORD:-chipbit}" | chpasswd
 
 # Grant groups needed for evdev, audio, and GPU access.
-for grp in input audio video tty; do
+for grp in input audio video tty seat render; do
     if getent group "${grp}" > /dev/null; then
         usermod -aG "${grp}" chipbit
     fi
 done
 
 # ---------------------------------------------------------------------------
-# 4. Runtime directories
+# 4. Hostname and runtime directories
 # ---------------------------------------------------------------------------
+echo "chipbit" > /etc/hostname
+sed -i 's/raspberrypi/chipbit/g' /etc/hosts 2>/dev/null || true
 mkdir -p /var/lib/chipbit
 chown chipbit:chipbit /var/lib/chipbit
 chmod 0755 /var/lib/chipbit
@@ -137,7 +154,21 @@ systemctl enable chipbit-launcher.service
 systemctl enable chipbit-web.service
 
 # ---------------------------------------------------------------------------
-# 7. Clean up
+# 7. Strip the Pi OS firstboot hook from cmdline.txt
+# ---------------------------------------------------------------------------
+# The base image ships with init=/usr/lib/raspberrypi-sys-mods/firstboot which
+# prompts to create a user on first boot.  Our chroot already creates the chipbit
+# user and sets everything up, so skip firstboot entirely.
+# CustomPiOS mounts the boot partition at /boot/firmware/ inside the chroot.
+for CMDLINE_PATH in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    if [ -f "${CMDLINE_PATH}" ]; then
+        sed -i 's| init=/usr/lib/raspberrypi-sys-mods/firstboot||g' "${CMDLINE_PATH}"
+        echo "Stripped firstboot from ${CMDLINE_PATH}"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 8. Clean up
 # ---------------------------------------------------------------------------
 apt-get clean
 rm -rf /var/lib/apt/lists/*

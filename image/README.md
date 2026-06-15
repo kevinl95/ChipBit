@@ -141,7 +141,15 @@ into the chroot as `/filesystem/`; `start_chroot_script` then merges that into
 the root at startup with `cp -a /filesystem/. /`. The Ruffle binary is selected
 automatically for the chroot architecture (aarch64 or x86_64; skipped on armhf).
 
-The resulting `.img` can be written to an SD card with `dd` or Raspberry Pi Imager.
+The resulting image is written to `image/workspace/<base-image-name>.img`.
+Flash it to an SD card:
+
+```bash
+sudo dd if=image/workspace/2026-04-13-raspios-bookworm-armhf-lite.img \
+     of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Or use Raspberry Pi Imager → "Use custom image" and point it at that file.
 
 ### Overrideable variables
 

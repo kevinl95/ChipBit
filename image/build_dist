@@ -37,4 +37,23 @@ export DIST_PATH="${DIR}"
 export CUSTOM_PI_OS_PATH="$(<"${CUSTOMPIOS_PATH_FILE}")"
 export PATH="$PATH:${CUSTOM_PI_OS_PATH}"
 
-exec "${CUSTOM_PI_OS_PATH}/build_custom_os" "$@"
+"${CUSTOM_PI_OS_PATH}/build_custom_os" "$@"
+
+# ---------------------------------------------------------------------------
+# Post-step: ensure the Pi OS firstboot hook is gone from cmdline.txt.
+# The chroot script patches it if /boot/firmware/ is mounted; this is the
+# host-side backstop for when it isn't.
+# ---------------------------------------------------------------------------
+BUILT_IMG="$(find "${DIR}/workspace" -maxdepth 1 -name "*.img" ! -name "*.img.xz" | head -1)"
+if [ -n "${BUILT_IMG}" ] && command -v mtools &>/dev/null; then
+    BOOT_OFFSET=$(( $(fdisk -l "${BUILT_IMG}" | grep "^${BUILT_IMG}1 " | awk '{print $2}') * 512 ))
+    MTOOLSRC_FILE="$(mktemp)"
+    echo "drive b: file=\"${BUILT_IMG}\" offset=${BOOT_OFFSET}" > "${MTOOLSRC_FILE}"
+    CMDLINE=$(MTOOLSRC="${MTOOLSRC_FILE}" mtype b:cmdline.txt 2>/dev/null || true)
+    if echo "${CMDLINE}" | grep -q "firstboot"; then
+        CMDLINE_NEW="${CMDLINE// init=\/usr\/lib\/raspberrypi-sys-mods\/firstboot/}"
+        printf '%s' "${CMDLINE_NEW}" | MTOOLSRC="${MTOOLSRC_FILE}" mcopy -o - "b:cmdline.txt"
+        echo "build_dist: stripped firstboot from cmdline.txt in ${BUILT_IMG}"
+    fi
+    rm -f "${MTOOLSRC_FILE}"
+fi

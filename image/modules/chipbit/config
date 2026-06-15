@@ -9,9 +9,10 @@ CHIPBIT_VERSION="${CHIPBIT_VERSION:-0.1.0}"
 # Release binaries: https://github.com/ruffle-rs/ruffle/releases
 RUFFLE_TAG="${RUFFLE_TAG:-2024-10-13}"
 
-# UID/GID for the kiosk system user created in the image.
-CHIPBIT_UID="${CHIPBIT_UID:-900}"
-CHIPBIT_GID="${CHIPBIT_GID:-900}"
+# UID/GID for the kiosk user.  Must be >= UID_MIN (1000) so logind creates a
+# proper session with XDG_RUNTIME_DIR — required for Wayland/cage to work.
+CHIPBIT_UID="${CHIPBIT_UID:-1000}"
+CHIPBIT_GID="${CHIPBIT_GID:-1000}"
 
 # TCP port the web service binds to (must match chipbit-web.service).
 CHIPBIT_WEB_PORT="${CHIPBIT_WEB_PORT:-8080}"
