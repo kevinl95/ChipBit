@@ -1,15 +1,14 @@
 [Unit]
 Description=ChipBit Parent Console and Kiosk Shell
 Documentation=https://github.com/chipbit/chipbit
-After=network.target
 
 [Service]
 Type=simple
 User=chipbit
-Group=chipbit
 
 ExecStart=/usr/local/bin/chipbit-web \
     --catalog /usr/share/chipbit/catalog.yaml \
+    --user-catalog /var/lib/chipbit/user-catalog.yaml \
     --cards /var/lib/chipbit/cards.yaml \
     --host 0.0.0.0 \
     --port 8080 \

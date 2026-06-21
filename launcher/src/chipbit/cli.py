@@ -7,7 +7,7 @@ import logging
 import signal
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from . import __version__
@@ -21,7 +21,7 @@ from .launcher import (
     LaunchSettings,
     poll_config,
 )
-from .models import ConfigLoadError, load_cards, load_catalog
+from .models import ConfigLoadError, load_cards, load_catalog_merged
 from .reader import EvdevReader, MockReader, find_rfid_reader, pump_reader
 from .web import create_web_server
 
@@ -33,6 +33,7 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chipbit-launcher")
     parser.add_argument("--catalog", type=Path, default=Path("catalog/catalog.yaml"))
     parser.add_argument("--cards", type=Path, default=Path("cards.yaml"))
+    parser.add_argument("--user-catalog", type=Path, default=None)
     parser.add_argument("--reader-device")
     parser.add_argument(
         "--mock-reader",
@@ -75,8 +76,10 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     if args.mock_reader is None and not args.reader_device:
         args.reader_device = find_rfid_reader()
         if not args.reader_device:
-            parser.error(
-                "no RFID reader detected; plug one in or use --reader-device to specify the path"
+            # Don't exit — keep the control API running so the web service stays
+            # connected. A reader thread will retry discovery every few seconds.
+            log.warning(
+                "no RFID reader detected at startup; will retry until one appears"
             )
 
     logging.basicConfig(
@@ -84,7 +87,7 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    config = FileBackedConfig(args.catalog, args.cards)
+    config = FileBackedConfig(args.catalog, args.cards, args.user_catalog)
     if not config.load(force=True):
         log.error("could not load initial config; exiting")
         return 1
@@ -118,10 +121,9 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     if args.mock_reader is not None:
         return _run_mock_mode(args.mock_reader, service, stop, httpd)
 
-    reader = EvdevReader(args.reader_device)
     reader_thread = threading.Thread(
-        target=pump_reader,
-        args=(reader, service.on_scan, stop),
+        target=_find_and_pump_reader,
+        args=(args.reader_device, service.on_scan, stop),
         daemon=True,
     )
     reader_thread.start()
@@ -152,6 +154,7 @@ def web_main(
     parser = argparse.ArgumentParser(prog="chipbit-web")
     parser.add_argument("--catalog", type=Path, default=Path("catalog/catalog.yaml"))
     parser.add_argument("--cards", type=Path, default=Path("cards.yaml"))
+    parser.add_argument("--user-catalog", type=Path, default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--control-url", default="http://127.0.0.1:8765")
@@ -169,7 +172,7 @@ def web_main(
     )
 
     try:
-        load_catalog(args.catalog)
+        load_catalog_merged(args.catalog, args.user_catalog)
         load_cards(args.cards)
     except ConfigLoadError as exc:
         log.error("could not load initial web config: %s", exc)
@@ -181,6 +184,7 @@ def web_main(
         catalog_path=args.catalog,
         cards_path=args.cards,
         control_base_url=args.control_url,
+        user_catalog_path=args.user_catalog,
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -211,6 +215,27 @@ def web_main(
         httpd.server_close()
 
     return 0
+
+
+def _find_and_pump_reader(
+    initial_path: str | None,
+    on_scan: Callable[[str], None],
+    stop: threading.Event,
+) -> None:
+    """Discover an RFID reader (retrying if absent) then pump events from it."""
+    device_path = initial_path
+    while not stop.is_set():
+        if not device_path:
+            device_path = find_rfid_reader()
+            if not device_path:
+                log.warning("no RFID reader found; retrying in 5s")
+                stop.wait(5.0)
+                continue
+            log.info("RFID reader found: %s", device_path)
+        reader = EvdevReader(device_path)
+        pump_reader(reader, on_scan, stop)
+        # pump_reader only returns when stop fires — break to exit cleanly
+        break
 
 
 def _run_mock_mode(

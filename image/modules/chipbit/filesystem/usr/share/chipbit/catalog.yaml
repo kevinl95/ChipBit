@@ -50,7 +50,7 @@ settings:
 
 titles:
 
-  # --- Bundled native apps (baked into the image) -------------------------
+  # --- FOSS apps bundled in the image -------------------------------------
   - id: gcompris
     label: "GCompris"
     type: exec
@@ -59,7 +59,7 @@ titles:
     cmd: ["gcompris-qt", "--fullscreen"]
     subject: general
     min_age: 2
-    blurb: "100+ learning activities for ages 2-10."
+    blurb: "100+ learning activities for ages 2–10."
     art: gcompris.png
 
   - id: tuxpaint
@@ -70,11 +70,12 @@ titles:
     cmd: ["tuxpaint", "--fullscreen"]
     subject: art
     min_age: 3
+    blurb: "Creative painting for young children."
     art: tuxpaint.png
 
-  # --- Lazy native apps (install on first enroll) -------------------------
+  # --- FOSS apps installed on first enroll --------------------------------
   - id: marble
-    label: "Marble (Globe)"
+    label: "Marble"
     type: exec
     bundled: false
     install: { apt: [marble] }
@@ -85,39 +86,39 @@ titles:
     art: marble.png
 
   - id: kstars
-    label: "KStars (Planetarium)"
+    label: "KStars"
     type: exec
     bundled: false
     install: { apt: [kstars] }
     cmd: ["kstars"]
     subject: astronomy
     min_age: 8
+    blurb: "Interactive planetarium and night-sky explorer."
     art: kstars.png
 
-  # --- ScummVM titles (engine is a base dep; parent supplies data) --------
-  - id: puttmoon
-    label: "Putt-Putt Goes to the Moon"
-    type: scummvm
-    bundled: false        # nothing to install; gated on data instead
-    data: required
-    game_id: puttmoon
-    data_dir: scummvm/puttmoon
-    subject: adventure
-    min_age: 3
-    art: putt-moon.png
-
-  # --- DOSBox titles (engine base; parent supplies data) ------------------
-  - id: readerrabbit-dos
-    label: "Reader Rabbit (DOS)"
-    type: dosbox
+  - id: supertux
+    label: "SuperTux"
+    type: exec
     bundled: false
-    data: required
-    conf: readerrabbit/rr.conf
-    subject: reading
-    min_age: 4
-    art: reader-rabbit.png
+    install: { apt: [supertux] }
+    cmd: ["supertux2"]
+    subject: action
+    min_age: 5
+    blurb: "Classic side-scrolling platformer — free and open source."
+    art: supertux.png
 
-  # --- Web (browser is base; allowlist-gated) -----------------------------
+  - id: supertuxkart
+    label: "SuperTuxKart"
+    type: exec
+    bundled: false
+    install: { apt: [supertuxkart] }
+    cmd: ["supertuxkart", "--fullscreen"]
+    subject: racing
+    min_age: 4
+    blurb: "Fun kart racing with open-source characters."
+    art: supertuxkart.png
+
+  # --- Web (browser is base; URL added via parent console) ----------------
   - id: pbskids
     label: "PBS Kids"
     type: web
@@ -126,15 +127,9 @@ titles:
     allowlist: ["pbskids.org", "*.pbskids.org"]
     subject: general
     min_age: 3
+    blurb: "Free games and videos from PBS Kids."
     art: pbskids.png
 
-  # --- Ruffle / Flash preservation (engine base; parent supplies .swf) ----
-  - id: mathblaster-flash
-    label: "Math Blaster (Flash)"
-    type: ruffle
-    bundled: false
-    data: required
-    swf: flash/mathblaster.swf
-    subject: math
-    min_age: 6
-    art: mathblaster.png
+  # --- User-supplied content (parent adds data; enrolled via wizard) -------
+  # ScummVM, DOSBox, Ruffle, and custom web/exec entries are added through
+  # the parent console wizard and stored in /var/lib/chipbit/user-catalog.yaml.

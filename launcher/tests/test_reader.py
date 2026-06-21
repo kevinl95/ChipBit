@@ -4,7 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from chipbit.reader import _decode_key_event, _looks_like_rfid_reader, ecodes, find_rfid_reader
+from chipbit.reader import (
+    _BUS_USB,
+    _decode_key_event,
+    _looks_like_rfid_reader,
+    ecodes,
+    find_rfid_reader,
+)
 
 
 @pytest.mark.skipif(ecodes is None, reason="evdev not installed")
@@ -37,9 +43,13 @@ def _rfid_caps() -> dict:
     }
 
 
-def _make_device(caps: dict):
+def _make_device(caps: dict, *, bustype: int = _BUS_USB):
     closed = []
-    dev = SimpleNamespace(capabilities=lambda: caps, close=lambda: closed.append(1))
+    dev = SimpleNamespace(
+        capabilities=lambda: caps,
+        close=lambda: closed.append(1),
+        info=SimpleNamespace(bustype=bustype),
+    )
     return dev
 
 
@@ -81,10 +91,13 @@ def test_device_without_any_digit_key_is_rejected() -> None:
 
 
 @pytest.mark.skipif(ecodes is None, reason="evdev not installed")
-def test_full_keyboard_marker_causes_rejection() -> None:
+def test_full_keyboard_descriptor_is_still_accepted() -> None:
+    # Many USB RFID readers use a complete HID keyboard descriptor. The old
+    # "full keyboard markers" check rejected them incorrectly; bus-type
+    # filtering now handles the real-keyboard exclusion instead.
     caps = _rfid_caps()
-    caps[ecodes.EV_KEY] = list(caps[ecodes.EV_KEY]) + [ecodes.KEY_ESC]
-    assert _looks_like_rfid_reader(caps) is False
+    caps[ecodes.EV_KEY] = list(caps[ecodes.EV_KEY]) + [ecodes.KEY_ESC, ecodes.KEY_Q]
+    assert _looks_like_rfid_reader(caps) is True
 
 
 @pytest.mark.skipif(ecodes is None, reason="evdev not installed")
@@ -99,13 +112,13 @@ def test_find_rfid_reader_returns_path_of_matching_device() -> None:
 
 
 @pytest.mark.skipif(ecodes is None, reason="evdev not installed")
-def test_find_rfid_reader_skips_non_matching_device_and_returns_none() -> None:
-    keyboard_caps = _rfid_caps()
-    keyboard_caps[ecodes.EV_KEY] = list(keyboard_caps[ecodes.EV_KEY]) + [ecodes.KEY_ESC]
-
+def test_find_rfid_reader_skips_non_usb_device_and_returns_none() -> None:
+    # Built-in keyboards (I8042, PS/2, Bluetooth) are excluded by bus type so
+    # they are never confused with a USB RFID reader.
+    _BUS_I8042 = 0x11
     result = find_rfid_reader(
         list_devices=lambda: ["/dev/input/event0"],
-        input_device_factory=lambda path: _make_device(keyboard_caps),
+        input_device_factory=lambda path: _make_device(_rfid_caps(), bustype=_BUS_I8042),
     )
     assert result is None
 

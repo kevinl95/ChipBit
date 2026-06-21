@@ -219,6 +219,53 @@ def test_lock_clears_unlock_state_immediately(tmp_path: Path) -> None:
     assert service.status()["unlocked"] is False
 
 
+def test_capturing_admin_card_during_enrollment_refreshes_unlock(
+    tmp_path: Path,
+) -> None:
+    # If the admin card (uid "12-34-56") is the only card a parent has, they will
+    # tap it during the title-enrollment capture window.  The capture should still
+    # succeed AND the unlock deadline should be extended so the subsequent
+    # enroll_title_for_uid call does not see a stale unlock state.
+    clock = FakeClock()
+    service, _, _, _ = make_service(
+        tmp_path,
+        unlock_uid="12-34-56",
+        unlock_timeout_secs=10.0,
+        monotonic=clock,
+    )
+
+    # Unlock via the admin card.
+    service.on_scan("12-34-56")
+    assert service.status()["unlocked"] is True
+
+    # Advance time so the unlock is almost expired.
+    clock.advance(9.5)
+    assert service.status()["unlocked"] is True
+
+    # Start a capture in another thread (simulating the web service's capture()).
+    captured: list[str | None] = []
+    capture_thread = threading.Thread(
+        target=lambda: captured.append(service.capture(timeout=1.0)),
+        daemon=True,
+    )
+    capture_thread.start()
+
+    for _ in range(1000):
+        if service.status()["capture_mode"]:
+            break
+    else:
+        raise AssertionError("capture mode never armed")
+
+    # Tap the admin card during the capture window.  on_scan should both capture
+    # the UID and refresh the unlock deadline.
+    service.on_scan("12-34-56")
+    capture_thread.join(timeout=1.0)
+
+    assert captured == ["123456"], "admin card UID was not captured"
+    # The deadline should have been pushed forward; unlock must still be active.
+    assert service.status()["unlocked"] is True, "unlock expired after capture of admin card"
+
+
 def test_unknown_card_sets_transient_status_event(tmp_path: Path) -> None:
     clock = FakeClock()
     service, _, _, _ = make_service(
@@ -304,12 +351,14 @@ def test_first_scan_auto_enrolls_admin_card_when_no_admin_exists(
             ),
             [
                 "chromium",
+                "--ozone-platform=wayland",
                 "--kiosk",
                 "--noerrdialogs",
                 "--no-first-run",
                 "--disable-pinch",
                 "--disable-features=TranslateUI",
                 "--overscroll-history-navigation=0",
+                "--user-data-dir=/tmp/chipbit-web-app",
                 "--app=https://example.invalid/game",
             ],
         ),

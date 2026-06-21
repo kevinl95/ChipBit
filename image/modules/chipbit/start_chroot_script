@@ -30,16 +30,27 @@ CHIPBIT_CONTROL_PORT="${CHIPBIT_CONTROL_PORT:-8765}"
 # we fix the mode explicitly.
 chmod 1777 /tmp
 
+# Prevent apt from hanging indefinitely on a stalled TCP connection.
+# 60 s timeout per connection attempt; 3 retries before giving up.
+cat > /etc/apt/apt.conf.d/99-chipbit-build <<'EOF'
+Acquire::http::Timeout "60";
+Acquire::https::Timeout "60";
+Acquire::Retries "3";
+EOF
+
 apt-get update -y
 apt-get install -y --no-install-recommends \
     cage \
+    xwayland \
     dbus \
     scummvm \
     chromium-browser \
     python3-pip \
     python3-yaml \
+    python3-evdev \
     curl \
-    ca-certificates
+    ca-certificates \
+    openssh-server
 
 # dosbox-staging is not available in all Pi OS repo flavours (notably armhf).
 # Fall back to the original dosbox and symlink it so the launcher service
@@ -119,11 +130,34 @@ chmod 700 /home/chipbit
 # Override at build time with CHIPBIT_PASSWORD env var; default is "chipbit".
 echo "chipbit:${CHIPBIT_PASSWORD:-chipbit}" | chpasswd
 
+# Allow the chipbit web service to change the keyboard layout without a
+# password prompt.  Scoped to a single specific command — not broad sudo.
+echo "chipbit ALL=(ALL) NOPASSWD: /usr/bin/localectl set-x11-keymap *" \
+    > /etc/sudoers.d/chipbit-localectl
+chmod 0440 /etc/sudoers.d/chipbit-localectl
+
 # Grant groups needed for evdev, audio, and GPU access.
-for grp in input audio video tty seat render; do
+# adm: read system journal without sudo.  sudo: recovery access.
+for grp in input audio video tty seat render adm sudo netdev; do
     if getent group "${grp}" > /dev/null; then
         usermod -aG "${grp}" chipbit
     fi
+done
+
+# ---------------------------------------------------------------------------
+# Kiosk: the autologin.conf drop-in (already in the filesystem overlay) makes
+# getty@tty1 autologin as the chipbit user.  .bash_profile detects tty1 and
+# launches cage → chromium.  The getty session gives cage a proper logind
+# seat and XDG_RUNTIME_DIR automatically — no separate kiosk service needed.
+
+# Mask Pi OS first-boot services that conflict with our pre-created user.
+for svc in \
+    userconfig.service \
+    userconfig.path \
+    raspi-config.service \
+    NetworkManager-wait-online.service \
+    systemd-networkd-wait-online.service; do
+    systemctl mask "${svc}" 2>/dev/null || true
 done
 
 # ---------------------------------------------------------------------------
@@ -150,8 +184,19 @@ rm -f /usr/share/chipbit/chipbit-*.whl
 # ---------------------------------------------------------------------------
 # 6. Enable systemd services
 # ---------------------------------------------------------------------------
+systemctl enable chipbit-kiosk.service
 systemctl enable chipbit-launcher.service
 systemctl enable chipbit-web.service
+# Mask getty@tty1 — chipbit-kiosk.service owns VT1 via PAMName=login + TTYPath.
+systemctl mask getty@tty1.service
+
+# Enable SSH for remote diagnostics.
+# Allow password auth so the chipbit user is reachable without a key.
+systemctl enable ssh
+sed -i \
+    -e 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' \
+    -e 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' \
+    /etc/ssh/sshd_config
 
 # ---------------------------------------------------------------------------
 # 7. Strip the Pi OS firstboot hook from cmdline.txt
@@ -163,7 +208,8 @@ systemctl enable chipbit-web.service
 for CMDLINE_PATH in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
     if [ -f "${CMDLINE_PATH}" ]; then
         sed -i 's| init=/usr/lib/raspberrypi-sys-mods/firstboot||g' "${CMDLINE_PATH}"
-        echo "Stripped firstboot from ${CMDLINE_PATH}"
+        sed -i 's/ quiet//' "${CMDLINE_PATH}"
+        echo "Stripped firstboot and quiet from ${CMDLINE_PATH}"
     fi
 done
 

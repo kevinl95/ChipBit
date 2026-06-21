@@ -20,7 +20,7 @@ from .models import (
     ConfigLoadError,
     SystemCard,
     load_cards,
-    load_catalog,
+    load_catalog_merged,
     normalize_uid,
     resolve_title_content_path,
     save_cards,
@@ -61,19 +61,29 @@ class LaunchSettings:
 class FileBackedConfig:
     """Load catalog/cards from disk and refresh them when mtimes change."""
 
-    def __init__(self, catalog_path: Path, cards_path: Path) -> None:
+    def __init__(
+        self,
+        catalog_path: Path,
+        cards_path: Path,
+        user_catalog_path: Path | None = None,
+    ) -> None:
         self.catalog_path = catalog_path
         self.cards_path = cards_path
+        self.user_catalog_path = user_catalog_path
         self.catalog = Catalog(catalog_version=None, titles={})
         self.cards = CardsConfig()
         self._catalog_mtime: int | None = None
         self._cards_mtime: int | None = None
+        self._user_catalog_mtime: int | None = None
 
     def load(self, *, force: bool = False) -> bool:
         """Reload the catalog/cards if their mtimes changed or force is set."""
         try:
             catalog_mtime = _stat_mtime(self.catalog_path, allow_missing=False)
             cards_mtime = _stat_mtime(self.cards_path, allow_missing=True)
+            user_catalog_mtime = _stat_mtime(
+                self.user_catalog_path, allow_missing=True
+            ) if self.user_catalog_path else None
         except OSError as exc:
             log.error("config stat failed: %s", exc)
             return False
@@ -82,11 +92,12 @@ class FileBackedConfig:
             not force
             and catalog_mtime == self._catalog_mtime
             and cards_mtime == self._cards_mtime
+            and user_catalog_mtime == self._user_catalog_mtime
         ):
             return False
 
         try:
-            catalog = load_catalog(self.catalog_path)
+            catalog = load_catalog_merged(self.catalog_path, self.user_catalog_path)
             cards = load_cards(self.cards_path)
         except ConfigLoadError as exc:
             log.error("config load failed, keeping previous: %s", exc)
@@ -96,6 +107,7 @@ class FileBackedConfig:
         self.cards = cards
         self._catalog_mtime = catalog_mtime
         self._cards_mtime = cards_mtime
+        self._user_catalog_mtime = user_catalog_mtime
         log.info(
             "loaded %d title(s), %d title card(s), %d system card(s)",
             len(self.catalog.titles),
@@ -161,6 +173,12 @@ class LauncherService:
                 self._clear_last_event_locked()
                 self._capture_event.set()
                 log.info("captured uid %s", normalized_uid)
+                # If the admin card was tapped during enrollment, keep the unlock
+                # active so the enrollment itself still goes through.
+                if self.config.cards.system_action_for_uid(normalized_uid) == "unlock":
+                    self._unlock_deadline = (
+                        self._monotonic() + self.settings.unlock_timeout_secs
+                    )
                 return
             if "unlock" not in self.config.cards.system_cards:
                 self._auto_enroll_admin_locked(normalized_uid)
@@ -420,12 +438,14 @@ def build_launch_argv(
         return [settings.ruffle_bin, "--fullscreen", str(content_path)]
     return [
         settings.chromium_bin,
+        "--ozone-platform=wayland",
         "--kiosk",
         "--noerrdialogs",
         "--no-first-run",
         "--disable-pinch",
         "--disable-features=TranslateUI",
         "--overscroll-history-navigation=0",
+        "--user-data-dir=/tmp/chipbit-web-app",
         f"--app={title.url or ''}",
     ]
 

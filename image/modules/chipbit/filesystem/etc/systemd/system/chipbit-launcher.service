@@ -1,18 +1,27 @@
 [Unit]
 Description=ChipBit Launcher Daemon
 Documentation=https://github.com/chipbit/chipbit
-After=network.target chipbit-web.service
+After=chipbit-web.service
 
 [Service]
 Type=simple
 User=chipbit
-Group=chipbit
 # input group: evdev access for RFID reader auto-detection.
 # audio/video: inherited by launched child apps.
 SupplementaryGroups=input audio video
+# Display environment so launched apps can connect to the cage Wayland session.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+# Force SDL2 apps (TuxPaint, DOSBox, etc.) onto the Wayland backend.
+Environment=SDL_VIDEODRIVER=wayland
+# Force Qt apps (GCompris, KStars, etc.) onto the Wayland backend.
+Environment=QT_QPA_PLATFORM=wayland
+# /usr/games is where Pi OS installs gcompris-qt, tuxpaint, etc.
+Environment=PATH=/usr/games:/usr/local/bin:/usr/bin:/bin
 
 ExecStart=/usr/local/bin/chipbit-launcher \
     --catalog /usr/share/chipbit/catalog.yaml \
+    --user-catalog /var/lib/chipbit/user-catalog.yaml \
     --cards /var/lib/chipbit/cards.yaml \
     --control-host 127.0.0.1 \
     --control-port 8765 \

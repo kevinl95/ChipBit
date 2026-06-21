@@ -107,6 +107,74 @@ def normalize_uid(raw: str) -> str:
     return "".join(ch for ch in raw.upper() if ch.isalnum())
 
 
+def load_catalog_merged(
+    system_path: Path,
+    user_path: Path | None = None,
+) -> Catalog:
+    """Load system catalog, then overlay user-defined titles from user_path."""
+    system = load_catalog(system_path)
+    if user_path is None:
+        return system
+    user_data = _read_yaml_mapping(user_path, allow_missing=True)
+    if not user_data:
+        return system
+    raw_titles = user_data.get("titles") or []
+    if not isinstance(raw_titles, list):
+        log.warning("user catalog 'titles' must be a list; ignoring %s", user_path)
+        return system
+    user_titles: dict[str, CatalogTitle] = {}
+    for index, raw_title in enumerate(raw_titles, start=1):
+        title = _parse_catalog_title(raw_title, index)
+        if title is None:
+            continue
+        user_titles[title.id] = title
+    return Catalog(
+        catalog_version=system.catalog_version,
+        settings=system.settings,
+        titles={**system.titles, **user_titles},
+    )
+
+
+def save_user_title(path: Path, title: CatalogTitle) -> None:
+    """Add or replace a title entry in the user catalog at path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_data = _read_yaml_mapping(path, allow_missing=True)
+    raw_titles: list[Any] = existing_data.get("titles") or []
+    if not isinstance(raw_titles, list):
+        raw_titles = []
+
+    new_entry = _catalog_title_to_dict(title)
+    replaced = False
+    for i, item in enumerate(raw_titles):
+        if isinstance(item, dict) and item.get("id") == title.id:
+            raw_titles[i] = new_entry
+            replaced = True
+            break
+    if not replaced:
+        raw_titles.append(new_entry)
+
+    payload: dict[str, Any] = {"titles": raw_titles}
+
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            yaml.safe_dump(payload, handle, sort_keys=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = handle.name
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
 def load_catalog(path: Path) -> Catalog:
     """Load the title catalog from YAML, skipping malformed entries."""
     data = _read_yaml_mapping(path, allow_missing=False)
@@ -254,6 +322,42 @@ def save_cards(path: Path, config: CardsConfig) -> None:
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def _catalog_title_to_dict(title: CatalogTitle) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "id": title.id,
+        "label": title.label,
+        "type": title.type,
+        "bundled": title.bundled,
+    }
+    if title.install:
+        d["install"] = {mgr: list(pkgs) for mgr, pkgs in title.install.items()}
+    if title.data is not None:
+        d["data"] = title.data
+    if title.data_dir is not None:
+        d["data_dir"] = title.data_dir
+    if title.game_id is not None:
+        d["game_id"] = title.game_id
+    if title.conf is not None:
+        d["conf"] = title.conf
+    if title.cmd:
+        d["cmd"] = list(title.cmd)
+    if title.url is not None:
+        d["url"] = title.url
+    if title.allowlist:
+        d["allowlist"] = list(title.allowlist)
+    if title.swf is not None:
+        d["swf"] = title.swf
+    if title.subject is not None:
+        d["subject"] = title.subject
+    if title.min_age is not None:
+        d["min_age"] = title.min_age
+    if title.blurb is not None:
+        d["blurb"] = title.blurb
+    if title.art is not None:
+        d["art"] = title.art
+    return d
 
 
 def _read_yaml_mapping(path: Path, *, allow_missing: bool) -> dict[str, Any]:

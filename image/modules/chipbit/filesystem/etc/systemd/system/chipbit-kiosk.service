@@ -1,0 +1,35 @@
+[Unit]
+Description=ChipBit Kiosk Wayland Session
+After=chipbit-web.service systemd-user-sessions.service
+Requires=chipbit-web.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=chipbit
+PAMName=login
+TTYPath=/dev/tty1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=LIBSEAT_BACKEND=logind
+Environment=WLR_DRM_NO_ATOMIC=1
+Environment=WLR_NO_HARDWARE_CURSORS=1
+Environment=XDG_CACHE_HOME=/tmp/chipbit-xdg-cache
+ExecStartPre=+/bin/mkdir -p /tmp/chipbit-xdg-cache /run/user/1000
+ExecStartPre=+/bin/chown chipbit:chipbit /run/user/1000
+ExecStart=/usr/bin/dbus-run-session /usr/bin/cage -- chromium-browser \
+    --ozone-platform=wayland \
+    --kiosk \
+    --noerrdialogs \
+    --disable-infobars \
+    --no-first-run \
+    --disable-features=Translate \
+    --check-for-update-interval=31536000 \
+    --user-data-dir=/var/lib/chipbit/chromium \
+    http://127.0.0.1:8080/kiosk
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

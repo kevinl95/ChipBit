@@ -33,9 +33,10 @@ from .models import (
     ConfigLoadError,
     SystemCard,
     load_cards,
-    load_catalog,
+    load_catalog_merged,
     normalize_uid,
     save_cards,
+    save_user_title,
 )
 
 log = logging.getLogger(__name__)
@@ -137,6 +138,19 @@ PAGE_CSS = dedent("""
     button:hover {
       filter: brightness(0.95);
     }
+    .btn-link {
+      display: inline-block;
+      margin-top: 0.75rem;
+      padding: 0.6rem 1rem;
+      background: var(--accent);
+      color: white;
+      border-radius: 999px;
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    .btn-link:hover {
+      filter: brightness(0.95);
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -167,6 +181,31 @@ PAGE_CSS = dedent("""
       padding: 0.15rem 0.3rem;
       border-radius: 6px;
     }
+    details {
+      margin-top: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.6rem 1rem;
+    }
+    details[open] {
+      padding-bottom: 1rem;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: bold;
+      padding: 0.2rem 0;
+      list-style: none;
+    }
+    summary::before {
+      content: "▶ ";
+      font-size: 0.7em;
+    }
+    details[open] summary::before {
+      content: "▼ ";
+    }
+    details .wifi-form {
+      margin-top: 0.75rem;
+    }
     @media (max-width: 640px) {
       header {
         flex-direction: column;
@@ -191,13 +230,61 @@ PARENT_EVENTS_SCRIPT = dedent("""
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
       const badge = document.getElementById('live-mode');
-            const detail = document.getElementById('live-detail');
-      if (badge) {
-        badge.textContent = state.mode;
+      const detail = document.getElementById('live-detail');
+      const tapBanner = document.getElementById('tap-now-banner');
+      if (badge) badge.textContent = state.mode;
+      if (detail) detail.textContent = state.operation ? state.operation.message : '';
+      if (tapBanner) {
+        tapBanner.style.display = (state.status && state.status.capture_mode) ? '' : 'none';
       }
-            if (detail) {
-                detail.textContent = state.operation ? state.operation.message : '';
-            }
+    };
+
+    document.querySelectorAll('.enroll-form').forEach(function(form) {
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Waiting for card…';
+        }
+        fetch(form.action, {
+          method: 'POST',
+          body: '',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        }).catch(function() {}).then(function() {
+          window.location.replace('/');
+        });
+      });
+    });
+    """).strip()
+
+FIRST_RUN_EVENTS_SCRIPT = dedent("""
+    const events = new EventSource('/events');
+    events.onmessage = (event) => {
+        const state = JSON.parse(event.data);
+        const badge = document.getElementById('live-mode');
+        const detail = document.getElementById('live-detail');
+        if (badge) badge.textContent = state.mode;
+        if (detail) detail.textContent = state.operation ? state.operation.message : '';
+        if (state.has_admin_card) {
+            events.close();
+            window.location.replace('/');
+        }
+    };
+    """).strip()
+
+LOCKED_EVENTS_SCRIPT = dedent("""
+    const events = new EventSource('/events');
+    events.onmessage = (event) => {
+        const state = JSON.parse(event.data);
+        const badge = document.getElementById('live-mode');
+        const detail = document.getElementById('live-detail');
+        if (badge) badge.textContent = state.mode;
+        if (detail) detail.textContent = state.operation ? state.operation.message : '';
+        if (state.mode === 'unlocked') {
+            events.close();
+            window.location.replace('/');
+        }
     };
     """).strip()
 
@@ -291,6 +378,21 @@ KIOSK_CSS = dedent("""
             height: 100%;
             object-fit: cover;
         }
+        .kiosk-spinner {
+            display: none;
+            width: 2.5rem;
+            height: 2.5rem;
+            border: 4px solid rgba(217, 95, 50, 0.2);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .kiosk-spinner.active {
+            display: block;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
         @media (max-width: 900px) {
             .kiosk-panel {
                 grid-template-columns: minmax(0, 1fr);
@@ -308,7 +410,10 @@ KIOSK_EVENTS_SCRIPT = dedent("""
     const body = document.getElementById('kiosk-body');
         const artFrame = document.getElementById('kiosk-art-frame');
         const art = document.getElementById('kiosk-art');
+        const spinner = document.getElementById('kiosk-spinner');
     const events = new EventSource('/events');
+
+        const BUSY_KINDS = new Set(['loading', 'enroll']);
 
         const applyKioskState = (kiosk) => {
             if (!kiosk) {
@@ -316,6 +421,9 @@ KIOSK_EVENTS_SCRIPT = dedent("""
             }
             title.textContent = kiosk.title;
             body.textContent = kiosk.body;
+            if (spinner) {
+                spinner.classList.toggle('active', BUSY_KINDS.has(kiosk.kind));
+            }
             if (artFrame && art) {
                 if (kiosk.art) {
                     art.src = kiosk.art;
@@ -332,6 +440,10 @@ KIOSK_EVENTS_SCRIPT = dedent("""
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
             applyKioskState(state.kiosk);
+            if (state.mode === 'unlocked') {
+                events.close();
+                window.location.replace('/');
+            }
         };
 
         events.onerror = () => {
@@ -340,6 +452,27 @@ KIOSK_EVENTS_SCRIPT = dedent("""
                 body: 'Trying to reconnect. Hold tight.',
             });
     };
+    """).strip()
+
+WIFI_SCAN_SCRIPT = dedent("""
+    (function () {
+      var input = document.getElementById('ssid-input');
+      var list  = document.getElementById('ssid-list');
+      if (!input || !list) { return; }
+      fetch('/wifi/scan')
+        .then(function (r) { return r.json(); })
+        .then(function (ssids) {
+          input.placeholder = ssids.length
+            ? 'Select a network or type one'
+            : 'Type network name';
+          ssids.forEach(function (ssid) {
+            var o = document.createElement('option');
+            o.value = ssid;
+            list.appendChild(o);
+          });
+        })
+        .catch(function () { input.placeholder = 'Type network name'; });
+    })();
     """).strip()
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -367,20 +500,35 @@ class ControlClient:
         return self._request_json("POST", "/lock")
 
     def capture(self) -> str:
-        payload = self._request_json("POST", "/capture")
+        # Use a generous timeout: the launcher holds the connection open until a
+        # card is tapped (up to DEFAULT_CAPTURE_TIMEOUT_SECS = 30 s), so the
+        # HTTP client must wait at least that long before giving up.
+        try:
+            payload = self._request_json("POST", "/capture", timeout=35.0)
+        except ControlApiError as exc:
+            if "no card within timeout" in str(exc):
+                raise ControlApiError(
+                    "No card detected — hold the card close to the reader and try again"
+                ) from exc
+            raise
         uid = payload.get("uid")
         if not isinstance(uid, str) or not uid:
             raise ControlApiError("daemon capture returned an invalid uid")
         return uid
 
-    def _request_json(self, method: str, path: str) -> dict[str, object]:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
         request = Request(
             f"{self.base_url.rstrip('/')}{path}",
             data=b"" if method == "POST" else None,
             method=method,
         )
         try:
-            with urlopen(request, timeout=self.timeout_secs) as response:
+            with urlopen(request, timeout=timeout or self.timeout_secs) as response:
                 body = response.read().decode("utf-8")
                 payload = json.loads(body)
         except HTTPError as exc:
@@ -409,6 +557,7 @@ class WebApp:
     network_checker: NetworkChecker | None = None
     scummvm_executable: str = "scummvm"
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS
+    user_catalog_path: Path | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -438,22 +587,36 @@ class WebApp:
     ) -> str:
         catalog = self._load_catalog()
         cards = load_cards(self.cards_path)
-        status = self.control.status()
+        try:
+            status = self.control.status()
+        except ControlApiError:
+            status = {}
         mode = self._mode(cards, status)
 
         if mode == "first-run":
             body = self._render_first_run(message=message, error=error)
-        elif mode == "locked":
-            body = self._render_locked(status=status, message=message, error=error)
-        else:
-            body = self._render_unlocked(
-                catalog=catalog,
-                cards=cards,
-                status=status,
-                message=message,
-                error=error,
+            return self._layout(
+                "ChipBit Parent Console",
+                body,
+                include_events=True,
+                script=FIRST_RUN_EVENTS_SCRIPT,
             )
 
+        if mode == "locked":
+            body = self._render_locked(status=status, message=message, error=error)
+            return self._layout(
+                "ChipBit Parent Console",
+                body,
+                include_events=True,
+                script=LOCKED_EVENTS_SCRIPT,
+            )
+
+        body = self._render_unlocked(
+            catalog=catalog,
+            cards=cards,
+            message=message,
+            error=error,
+        )
         return self._layout("ChipBit Parent Console", body, include_events=True)
 
     def render_kiosk(self) -> str:
@@ -466,6 +629,7 @@ class WebApp:
                   <p class="kiosk-body" id="kiosk-body">
                     Waiting for a game card, Home card, or admin card.
                   </p>
+                  <div class="kiosk-spinner" id="kiosk-spinner"></div>
                 </section>
                 <section class="kiosk-art-frame" id="kiosk-art-frame" hidden>
                   <img class="kiosk-art" id="kiosk-art" alt="" />
@@ -538,13 +702,13 @@ class WebApp:
         normalized_uid = normalize_uid(uid)
         if not normalized_uid:
             raise ValueError("uid is required")
+        cards = load_cards(self.cards_path)
+        self._require_unlocked(cards)
         return self.enroll_title_for_uid(normalized_uid, title_id)
 
     def enroll_title_for_uid(self, uid: str, title_id: str) -> str:
         with self._mutation_lock:
             catalog = self._load_catalog()
-            cards = load_cards(self.cards_path)
-            self._require_unlocked(cards)
 
             title = catalog.titles.get(title_id)
             if title is None:
@@ -577,7 +741,6 @@ class WebApp:
 
         self._clear_readiness_cache()
         self.control.reload()
-        self.control.lock()
         if progress:
             return progress[-1].message
         normalized_uid = normalize_uid(uid)
@@ -617,6 +780,28 @@ class WebApp:
             return "Reloaded daemon config"
         return "No config changes detected"
 
+    def set_keyboard_layout(self, layout: str) -> str:
+        _VALID_LAYOUTS = {"us", "gb", "de", "fr", "es", "it", "pt", "nl"}
+        if layout not in _VALID_LAYOUTS:
+            raise ValueError(f"unsupported keyboard layout: {layout!r}")
+        cards = load_cards(self.cards_path)
+        self._require_unlocked(cards)
+        result = self.runner(
+            ["sudo", "localectl", "set-x11-keymap", layout],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            msg = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"keyboard layout change failed: {msg}")
+        self.control.lock()
+        return f"Keyboard layout set to {layout} — takes effect after the screen restarts"
+
+    def lock_controls(self) -> str:
+        self.control.lock()
+        return "Parent controls locked"
+
     def configure_wifi(self, ssid: str, password: str | None) -> str:
         cards = load_cards(self.cards_path)
         self._require_unlocked(cards)
@@ -624,6 +809,14 @@ class WebApp:
         normalized_ssid = ssid.strip()
         if not normalized_ssid:
             raise ValueError("ssid is required")
+
+        # Trigger a fresh scan so nmcli can see nearby networks before connecting.
+        self.runner(
+            ["nmcli", "-w", "10", "device", "wifi", "rescan"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
         argv = ["nmcli", "device", "wifi", "connect", normalized_ssid]
         if password:
@@ -635,6 +828,117 @@ class WebApp:
         self.control.lock()
         return f"Connected Wi-Fi to {normalized_ssid}"
 
+    def scan_wifi(self) -> list[str]:
+        """Return nearby SSIDs in signal-strength order (strongest first)."""
+        try:
+            result = self.runner(
+                [
+                    "nmcli", "-f", "SSID", "-t", "-e", "no",
+                    "device", "wifi", "list", "--rescan", "yes",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return []
+        seen: set[str] = set()
+        ssids: list[str] = []
+        for line in result.stdout.splitlines():
+            ssid = line.strip()
+            if ssid and ssid not in seen:
+                seen.add(ssid)
+                ssids.append(ssid)
+        return ssids
+
+    def create_custom_title(self, form: dict[str, str]) -> str:
+        import re
+        from urllib.parse import urlparse as _urlparse
+
+        cards = load_cards(self.cards_path)
+        self._require_unlocked(cards)
+
+        if self.user_catalog_path is None:
+            raise RuntimeError("no user catalog configured; cannot save custom titles")
+
+        title_type = form.get("type", "").strip()
+        label = form.get("label", "").strip()
+        if not label:
+            raise ValueError("title name is required")
+        if title_type not in {"web", "exec", "scummvm", "dosbox", "ruffle"}:
+            raise ValueError(f"invalid type: {title_type!r}")
+
+        title_id = self._unique_title_id(
+            re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:28] or "custom"
+        )
+
+        if title_type == "web":
+            url = form.get("url", "").strip()
+            if not url:
+                raise ValueError("URL is required")
+            host = _urlparse(url).hostname or ""
+            if not host:
+                raise ValueError("URL must include a hostname")
+            title = CatalogTitle(
+                id=title_id, label=label, type="web",
+                bundled=False, url=url, allowlist=(host,),
+            )
+        elif title_type == "exec":
+            cmd_str = form.get("cmd", "").strip()
+            if not cmd_str:
+                raise ValueError("launch command is required")
+            apt_pkg = form.get("apt", "").strip()
+            title = CatalogTitle(
+                id=title_id, label=label, type="exec",
+                bundled=False, cmd=tuple(cmd_str.split()),
+                install={"apt": (apt_pkg,)} if apt_pkg else {},
+            )
+        elif title_type == "scummvm":
+            game_id = form.get("game_id", "").strip()
+            if not game_id:
+                raise ValueError("ScummVM game ID is required")
+            data_dir = form.get("data_dir", "").strip() or None
+            title = CatalogTitle(
+                id=title_id, label=label, type="scummvm",
+                bundled=False, data="required", game_id=game_id,
+                data_dir=data_dir,
+                install={"apt": ("scummvm",)},
+            )
+        elif title_type == "dosbox":
+            conf = form.get("conf", "").strip()
+            if not conf:
+                raise ValueError("config file path is required")
+            title = CatalogTitle(
+                id=title_id, label=label, type="dosbox",
+                bundled=False, data="required", conf=conf,
+            )
+        else:  # ruffle
+            swf = form.get("swf", "").strip()
+            if not swf:
+                raise ValueError("SWF file path is required")
+            title = CatalogTitle(
+                id=title_id, label=label, type="ruffle",
+                bundled=False, data="required", swf=swf,
+            )
+
+        save_user_title(self.user_catalog_path, title)
+        self._clear_readiness_cache()
+        self.control.reload()
+        self.control.lock()
+        return f"Added “{label}” — tap “Tap card to enroll” to assign a card"
+
+    def _unique_title_id(self, slug: str) -> str:
+        catalog = self._load_catalog()
+        candidate = f"user-{slug}"
+        if candidate not in catalog.titles:
+            return candidate
+        for n in range(2, 100):
+            candidate = f"user-{slug}-{n}"
+            if candidate not in catalog.titles:
+                return candidate
+        import uuid
+        return f"user-{uuid.uuid4().hex[:8]}"
+
     def _require_unlocked(self, cards: CardsConfig) -> None:
         if "unlock" not in cards.system_cards:
             raise PermissionError("no admin card is enrolled yet")
@@ -643,7 +947,7 @@ class WebApp:
             raise PermissionError("tap the admin card to unlock configuration")
 
     def _load_catalog(self) -> Catalog:
-        return load_catalog(self.catalog_path)
+        return load_catalog_merged(self.catalog_path, self.user_catalog_path)
 
     def _mode(self, cards: CardsConfig, status: dict[str, object]) -> str:
         if "unlock" not in cards.system_cards:
@@ -663,12 +967,9 @@ class WebApp:
               <p class="eyebrow">First Run</p>
               <h1>Make this card the admin card</h1>
               <p>
-                No network is required. Tap one card and ChipBit will use it to
-                unlock parent controls.
+                Hold any card to the reader now. No button needed — this page
+                will update automatically when the card is registered.
               </p>
-              <form method="post" action="/admin/enroll">
-                <button type="submit">Tap a card to enroll admin</button>
-              </form>
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -680,20 +981,17 @@ class WebApp:
         message: str | None,
         error: str | None,
     ) -> str:
-        running = "yes" if status.get("running") else "no"
-        current = escape(str(status.get("current") or "Idle"))
+        current = escape(str(status.get("current") or ""))
+        playing = f"<p>Now playing: <strong>{current}</strong></p>" if current else ""
         section = dedent(f"""
             <section class="panel panel-wide">
-              <p class="eyebrow">Locked</p>
-              <h1>Tap the admin card</h1>
+              <p class="eyebrow">Parent Controls</p>
+              <h1>Tap your admin card to unlock</h1>
               <p>
-                Parent controls stay locked until the daemon reports
-                <code>status.unlocked = true</code>.
+                Hold the card you registered as admin to the reader.
+                This page will update automatically.
               </p>
-              <dl class="stats">
-                <div><dt>Running</dt><dd>{running}</dd></div>
-                <div><dt>Current</dt><dd>{current}</dd></div>
-              </dl>
+              {playing}
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -703,7 +1001,6 @@ class WebApp:
         *,
         catalog: Catalog,
         cards: CardsConfig,
-        status: dict[str, object],
         message: str | None,
         error: str | None,
     ) -> str:
@@ -723,20 +1020,16 @@ class WebApp:
         if not card_rows:
             card_rows = '<tr><td colspan="4">No game cards enrolled yet.</td></tr>'
 
-        running = "yes" if status.get("running") else "no"
-        current = escape(str(status.get("current") or "Idle"))
         admin_uid = escape(cards.system_cards["unlock"].uid)
         section = dedent(f"""
+            <div id="tap-now-banner" class="flash ok" style="display:none">
+              Hold your card to the reader now — waiting up to 30 seconds.
+            </div>
             <section class="panel">
               <p class="eyebrow">Parent Console</p>
-              <h1>Catalog</h1>
-              <p>Admin card: <strong>{admin_uid}</strong></p>
-              <dl class="stats">
-                <div><dt>Running</dt><dd>{running}</dd></div>
-                <div><dt>Current</dt><dd>{current}</dd></div>
-                <div><dt>Titles</dt><dd>{len(catalog.titles)}</dd></div>
-                <div><dt>Cards</dt><dd>{len(cards.title_cards)}</dd></div>
-              </dl>
+              <h1>Game cards</h1>
+              <p class="muted">Admin card UID: <code>{admin_uid}</code></p>
+              <button type="button" onclick="fetch('/settings/lock',{{method:'POST'}}).then(()=>location.replace('/kiosk'))">&#8592; Back to play mode</button>
             </section>
             <section class="catalog-grid">{title_rows}</section>
             <section class="panel panel-wide">
@@ -754,21 +1047,92 @@ class WebApp:
               </table>
             </section>
             <section class="panel panel-wide">
+              <h2>Add a custom card</h2>
+              <p class="muted">
+                Create cards for software you own or websites you'd like your child to visit.
+                After saving, use "Tap card to enroll" in the grid above to assign an RFID card.
+              </p>
+              <details>
+                <summary>Add a website</summary>
+                <form method="post" action="/titles/custom" class="wifi-form">
+                  <input type="hidden" name="type" value="web" />
+                  <label>Name <input type="text" name="label" placeholder="My Website" required /></label>
+                  <label>URL <input type="url" name="url" placeholder="https://example.com" required /></label>
+                  <button type="submit">Save website card</button>
+                </form>
+              </details>
+              <details>
+                <summary>Add an installed app</summary>
+                <form method="post" action="/titles/custom" class="wifi-form">
+                  <input type="hidden" name="type" value="exec" />
+                  <label>Name <input type="text" name="label" placeholder="My App" required /></label>
+                  <label>Launch command <input type="text" name="cmd" placeholder="myapp --fullscreen" required /></label>
+                  <label>Apt package to install (optional) <input type="text" name="apt" placeholder="my-package" /></label>
+                  <button type="submit">Save app card</button>
+                </form>
+              </details>
+              <details>
+                <summary>Add a ScummVM game (you supply game data)</summary>
+                <form method="post" action="/titles/custom" class="wifi-form">
+                  <input type="hidden" name="type" value="scummvm" />
+                  <label>Name <input type="text" name="label" placeholder="Monkey Island" required /></label>
+                  <label>
+                    ScummVM game ID
+                    <input type="text" name="game_id" placeholder="monkey" required />
+                  </label>
+                  <label>
+                    Data folder under /games/ (leave blank for scummvm/&lt;name&gt;)
+                    <input type="text" name="data_dir" placeholder="scummvm/monkey" />
+                  </label>
+                  <button type="submit">Save ScummVM card</button>
+                </form>
+              </details>
+              <details>
+                <summary>Add a DOSBox game (you supply game data)</summary>
+                <form method="post" action="/titles/custom" class="wifi-form">
+                  <input type="hidden" name="type" value="dosbox" />
+                  <label>Name <input type="text" name="label" placeholder="My DOS Game" required /></label>
+                  <label>
+                    DOSBox config file path under /games/
+                    <input type="text" name="conf" placeholder="mygame/dosbox.conf" required />
+                  </label>
+                  <button type="submit">Save DOSBox card</button>
+                </form>
+              </details>
+            </section>
+            <section class="panel panel-wide">
               <h2>Settings</h2>
-              <form
-                method="post"
-                action="/settings/reload"
-                class="inline-form"
-              >
-                <button type="submit">Reload daemon config</button>
-              </form>
+              <h3>Wi-Fi</h3>
               <form method="post" action="/wifi/connect" class="wifi-form">
-                <label>SSID <input type="text" name="ssid" /></label>
-                <label>
-                  Password
+                <label>Network name
+                  <input type="text" name="ssid" id="ssid-input"
+                         list="ssid-list" placeholder="Scanning…"
+                         autocomplete="off" required />
+                  <datalist id="ssid-list"></datalist>
+                </label>
+                <label>Password
                   <input type="password" name="password" />
                 </label>
-                <button type="submit">Connect Wi-Fi</button>
+                <button type="submit">Connect</button>
+              </form>
+              <script>{WIFI_SCAN_SCRIPT}</script>
+              <h3>Keyboard layout</h3>
+              <form method="post" action="/settings/keyboard" class="inline-form">
+                <select name="layout">
+                  <option value="us">US (QWERTY)</option>
+                  <option value="gb">UK (QWERTY)</option>
+                  <option value="de">German (QWERTZ)</option>
+                  <option value="fr">French (AZERTY)</option>
+                  <option value="es">Spanish</option>
+                  <option value="it">Italian</option>
+                  <option value="pt">Portuguese</option>
+                  <option value="nl">Dutch</option>
+                </select>
+                <button type="submit">Apply keyboard layout</button>
+              </form>
+              <h3>System</h3>
+              <form method="post" action="/settings/lock" class="inline-form">
+                <button type="submit">Lock parent controls</button>
               </form>
             </section>
             """).strip()
@@ -791,7 +1155,7 @@ class WebApp:
               <p>{summary}</p>
               <p class="muted">{state}</p>
               <p class="muted">Bound cards: {bound_cards}</p>
-              <form method="post" action="/titles/{action}/enroll">
+              <form method="post" action="/titles/{action}/enroll" class="enroll-form">
                 <button type="submit">Tap card to enroll</button>
               </form>
             </article>
@@ -907,10 +1271,12 @@ class WebApp:
 
         last_event = status.get("last_event")
         if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
+            uid = last_event.get("uid", "")
+            body = f"Card {uid} is not set up yet. Enroll it in the parent console." if uid else "That card is not set up yet."
             return {
                 "kind": "unknown-card",
                 "title": "Ask a grown-up",
-                "body": "That card is not set up yet.",
+                "body": body,
             }
 
         return {
@@ -1039,6 +1405,7 @@ def create_web_server(
     network_checker: NetworkChecker | None = None,
     scummvm_executable: str = "scummvm",
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS,
+    user_catalog_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
     app = WebApp(
@@ -1049,6 +1416,7 @@ def create_web_server(
         network_checker=network_checker,
         scummvm_executable=scummvm_executable,
         event_poll_secs=event_poll_secs,
+        user_catalog_path=user_catalog_path,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -1059,6 +1427,12 @@ def create_web_server(
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _read_form(self) -> dict[str, str]:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1072,14 +1446,27 @@ def create_web_server(
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path
             try:
-                if path == "/":
+                if path in ("/", "/admin"):
                     self._send_html(200, app.render_index())
                     return
                 if path == "/kiosk":
+                    cards = load_cards(app.cards_path)
+                    if "unlock" not in cards.system_cards:
+                        self._redirect("/admin")
+                        return
                     self._send_html(200, app.render_kiosk())
                     return
                 if path == "/events":
                     self._serve_events()
+                    return
+                if path == "/wifi/scan":
+                    ssids = app.scan_wifi()
+                    body = json.dumps(ssids).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
             except (ConfigLoadError, ControlApiError) as exc:
                 self._send_html(502, app.render_index(error=str(exc)))
@@ -1104,11 +1491,17 @@ def create_web_server(
                     message = app.remove_card(uid)
                 elif path == "/settings/reload":
                     message = app.reload_daemon()
+                elif path == "/settings/keyboard":
+                    message = app.set_keyboard_layout(form.get("layout", ""))
+                elif path == "/settings/lock":
+                    message = app.lock_controls()
                 elif path == "/wifi/connect":
                     message = app.configure_wifi(
                         form.get("ssid", ""),
                         form.get("password"),
                     )
+                elif path == "/titles/custom":
+                    message = app.create_custom_title(form)
                 else:
                     self._send_html(404, app.render_index(error="not found"))
                     return

@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 RECONNECT_DELAY_SECS = 3.0
 REOPEN_DELAY_SECS = 1.0
 
+# linux/input.h BUS_USB — RFID readers always attach over USB.
+# Filtering to USB excludes built-in I8042/PS2 and Bluetooth keyboards so we
+# don't accidentally grab the user's real keyboard.
+_BUS_USB = 0x03
+
 if ecodes is not None:
     _KEYMAP = {getattr(ecodes, f"KEY_{digit}"): digit for digit in "0123456789"}
     _KEYMAP.update(
@@ -33,41 +38,9 @@ if ecodes is not None:
     )
     _KEYMAP.update({getattr(ecodes, f"KEY_{letter}"): letter for letter in "ABCDEF"})
     _ENTER = {ecodes.KEY_ENTER, ecodes.KEY_KPENTER}
-
-    # Keys present on every full keyboard but never on a bare RFID reader.
-    # If a device has any of these we know it is not an RFID reader.
-    _FULL_KEYBOARD_MARKERS: frozenset[int] = frozenset(
-        filter(
-            None,
-            [
-                getattr(ecodes, k, None)
-                for k in (
-                    "KEY_ESC",
-                    "KEY_TAB",
-                    "KEY_SPACE",
-                    "KEY_BACKSPACE",
-                    "KEY_F1",
-                    "KEY_LEFTCTRL",
-                    "KEY_RIGHTCTRL",
-                    "KEY_LEFTALT",
-                    "KEY_RIGHTALT",
-                    # Non-hex letters that no RFID reader would emit
-                    "KEY_Q",
-                    "KEY_W",
-                    "KEY_T",
-                    "KEY_Y",
-                    "KEY_U",
-                    "KEY_I",
-                    "KEY_O",
-                    "KEY_P",
-                )
-            ],
-        )
-    )
 else:  # pragma: no cover - only used if evdev import fails
     _KEYMAP: dict[int, str] = {}
     _ENTER: set[int] = set()
-    _FULL_KEYBOARD_MARKERS: frozenset[int] = frozenset()
 
 
 def find_rfid_reader(
@@ -94,6 +67,8 @@ def find_rfid_reader(
         dev = None
         try:
             dev = _factory(path)
+            if dev.info.bustype != _BUS_USB:
+                continue
             caps = dev.capabilities()
         except OSError:
             continue
@@ -114,16 +89,20 @@ def find_rfid_reader(
 def _looks_like_rfid_reader(caps: dict) -> bool:
     if ecodes.EV_KEY not in caps:
         return False
+    # Mice, trackpads, joysticks — not a keyboard-style reader.
     if ecodes.EV_REL in caps or ecodes.EV_ABS in caps:
         return False
 
     keys = frozenset(caps[ecodes.EV_KEY])
 
+    # Must be able to send Enter (terminates the UID string) and at least one
+    # hex digit.  We intentionally skip the old "full keyboard markers" check
+    # because many readers use a complete HID keyboard descriptor even though
+    # they only ever emit hex digits + Enter — bus-type filtering (USB only)
+    # handles false positives from built-in keyboards instead.
     if not (keys & _ENTER):
         return False
     if not (keys & frozenset(_KEYMAP)):
-        return False
-    if keys & _FULL_KEYBOARD_MARKERS:
         return False
 
     return True
@@ -223,7 +202,10 @@ def pump_reader(
     for uid in reader.read_uids(stop):
         if stop.is_set():
             break
-        on_scan(uid)
+        try:
+            on_scan(uid)
+        except Exception:
+            log.exception("on_scan raised for uid %s; continuing", uid)
 
 
 def _decode_key_event(event: object) -> str | None:

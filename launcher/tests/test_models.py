@@ -9,18 +9,21 @@ from chipbit.models import (
     CardsConfig,
     Catalog,
     CatalogSettings,
+    CatalogTitle,
     ConfigLoadError,
     EnrolledCard,
     SystemCard,
     load_cards,
     load_catalog,
+    load_catalog_merged,
     normalize_uid,
     resolve_title_content_path,
     save_cards,
+    save_user_title,
 )
 
 
-def test_repo_catalog_loads_every_supported_type() -> None:
+def test_repo_catalog_loads_foss_titles() -> None:
     catalog_path = Path(__file__).resolve().parents[2] / "catalog" / "catalog.yaml"
 
     catalog = load_catalog(catalog_path)
@@ -28,22 +31,158 @@ def test_repo_catalog_loads_every_supported_type() -> None:
     assert isinstance(catalog, Catalog)
     assert catalog.catalog_version == 1
     assert catalog.settings.games_root == Path("/games")
-    assert {title.type for title in catalog.titles.values()} == {
-        "exec",
-        "scummvm",
-        "dosbox",
-        "web",
-        "ruffle",
-    }
+    # All bundled titles are FOSS exec or web — no copyrighted content
+    assert "puttmoon" not in catalog.titles
+    assert "readerrabbit-dos" not in catalog.titles
+    assert "mathblaster-flash" not in catalog.titles
     assert catalog.titles["gcompris"].cmd == ("gcompris-qt", "--fullscreen")
-    assert catalog.titles["puttmoon"].game_id == "puttmoon"
-    assert catalog.titles["puttmoon"].data_dir == "scummvm/puttmoon"
-    assert catalog.titles["readerrabbit-dos"].conf == "readerrabbit/rr.conf"
     assert catalog.titles["pbskids"].allowlist == (
         "pbskids.org",
         "*.pbskids.org",
     )
-    assert catalog.titles["mathblaster-flash"].swf == "flash/mathblaster.swf"
+    assert {title.type for title in catalog.titles.values()} <= {
+        "exec",
+        "web",
+    }
+
+
+def test_load_catalog_merged_overlays_user_titles(tmp_path: Path) -> None:
+    system_path = tmp_path / "catalog.yaml"
+    system_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: gcompris
+    label: GCompris
+    type: exec
+    bundled: true
+    cmd: [gcompris-qt]
+""",
+        encoding="utf-8",
+    )
+    user_path = tmp_path / "user-catalog.yaml"
+    user_path.write_text(
+        """
+titles:
+  - id: user-mysite
+    label: My Site
+    type: web
+    bundled: false
+    url: https://example.com
+    allowlist: [example.com]
+""",
+        encoding="utf-8",
+    )
+
+    catalog = load_catalog_merged(system_path, user_path)
+
+    assert "gcompris" in catalog.titles
+    assert "user-mysite" in catalog.titles
+    assert catalog.titles["user-mysite"].url == "https://example.com"
+    assert catalog.settings.games_root == Path("/games")
+
+
+def test_load_catalog_merged_returns_system_only_when_user_path_is_none(
+    tmp_path: Path,
+) -> None:
+    system_path = tmp_path / "catalog.yaml"
+    system_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: gcompris
+    label: GCompris
+    type: exec
+    bundled: true
+    cmd: [gcompris-qt]
+""",
+        encoding="utf-8",
+    )
+
+    catalog = load_catalog_merged(system_path, None)
+
+    assert list(catalog.titles) == ["gcompris"]
+
+
+def test_load_catalog_merged_gracefully_handles_missing_user_catalog(
+    tmp_path: Path,
+) -> None:
+    system_path = tmp_path / "catalog.yaml"
+    system_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: gcompris
+    label: GCompris
+    type: exec
+    bundled: true
+    cmd: [gcompris-qt]
+""",
+        encoding="utf-8",
+    )
+
+    catalog = load_catalog_merged(system_path, tmp_path / "nonexistent.yaml")
+
+    assert list(catalog.titles) == ["gcompris"]
+
+
+def test_save_user_title_creates_file_and_can_be_read_back(tmp_path: Path) -> None:
+    import yaml
+
+    path = tmp_path / "user-catalog.yaml"
+    title = CatalogTitle(
+        id="user-mysite",
+        label="My Site",
+        type="web",
+        bundled=False,
+        url="https://example.com",
+        allowlist=("example.com",),
+    )
+
+    save_user_title(path, title)
+
+    raw = yaml.safe_load(path.read_text())
+    assert len(raw["titles"]) == 1
+    assert raw["titles"][0]["id"] == "user-mysite"
+    assert raw["titles"][0]["url"] == "https://example.com"
+
+
+def test_save_user_title_replaces_existing_entry(tmp_path: Path) -> None:
+    path = tmp_path / "user-catalog.yaml"
+    original = CatalogTitle(
+        id="user-mysite",
+        label="Old Name",
+        type="web",
+        bundled=False,
+        url="https://old.example.com",
+        allowlist=("old.example.com",),
+    )
+    save_user_title(path, original)
+
+    updated = CatalogTitle(
+        id="user-mysite",
+        label="New Name",
+        type="web",
+        bundled=False,
+        url="https://new.example.com",
+        allowlist=("new.example.com",),
+    )
+    save_user_title(path, updated)
+
+    import yaml
+    raw = yaml.safe_load(path.read_text())
+    assert len(raw["titles"]) == 1
+    assert raw["titles"][0]["label"] == "New Name"
+    assert raw["titles"][0]["url"] == "https://new.example.com"
 
 
 def test_load_catalog_skips_invalid_entries_with_warning(
