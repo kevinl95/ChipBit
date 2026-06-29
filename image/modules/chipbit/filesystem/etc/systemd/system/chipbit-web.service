@@ -5,6 +5,11 @@ Documentation=https://github.com/chipbit/chipbit
 [Service]
 Type=simple
 User=chipbit
+# Needed so apt-get install (run via sudo during enrollment) stays non-interactive.
+# sudo's env_keep passes this through if the target command is apt-get.
+Environment=DEBIAN_FRONTEND=noninteractive
+# Point to the chipbit user's runtime dir so diagnostics can find PipeWire sockets.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 
 ExecStart=/usr/local/bin/chipbit-web \
     --catalog /usr/share/chipbit/catalog.yaml \

@@ -55,23 +55,24 @@ titles:
     label: "GCompris"
     type: exec
     bundled: true
-    install: { apt: [gcompris-qt] }
+    install: { apt: [gcompris-qt, libqt5svg5] }
     cmd: ["gcompris-qt", "--fullscreen"]
     subject: general
     min_age: 2
     blurb: "100+ learning activities for ages 2–10."
-    art: gcompris.png
+    art: /art/gcompris.png
 
   - id: tuxpaint
     label: "Tux Paint"
     type: exec
     bundled: true
     install: { apt: [tuxpaint, tuxpaint-stamps-default] }
-    cmd: ["tuxpaint", "--fullscreen"]
+    cmd: ["tuxpaint", "--fullscreen=native", "--nosound"]
+    user_dirs: [".tuxpaint"]
     subject: art
     min_age: 3
     blurb: "Creative painting for young children."
-    art: tuxpaint.png
+    art: /art/tuxpaint.png
 
   # --- FOSS apps installed on first enroll --------------------------------
   - id: marble
@@ -79,11 +80,11 @@ titles:
     type: exec
     bundled: false
     install: { apt: [marble] }
-    cmd: ["marble", "--fullscreen"]
+    cmd: ["marble"]
     subject: geography
     min_age: 6
     blurb: "Spin a 3D globe and explore the world."
-    art: marble.png
+    art: /art/marble.png
 
   - id: kstars
     label: "KStars"
@@ -94,7 +95,7 @@ titles:
     subject: astronomy
     min_age: 8
     blurb: "Interactive planetarium and night-sky explorer."
-    art: kstars.png
+    art: /art/kstars.png
 
   - id: supertux
     label: "SuperTux"
@@ -105,18 +106,29 @@ titles:
     subject: action
     min_age: 5
     blurb: "Classic side-scrolling platformer — free and open source."
-    art: supertux.png
+    art: /art/supertux.png
 
   - id: supertuxkart
     label: "SuperTuxKart"
     type: exec
     bundled: false
     install: { apt: [supertuxkart] }
-    cmd: ["supertuxkart", "--fullscreen"]
+    cmd: ["/usr/local/bin/supertuxkart-x11", "--fullscreen"]
     subject: racing
     min_age: 4
     blurb: "Fun kart racing with open-source characters."
-    art: supertuxkart.png
+    art: /art/supertuxkart.png
+
+  - id: scratch
+    label: "Scratch"
+    type: exec
+    bundled: false
+    install: { apt: [scratch3] }
+    cmd: ["/usr/lib/scratch3/scratch-desktop", "--ozone-platform=wayland"]
+    subject: coding
+    min_age: 7
+    blurb: "Drag-and-drop coding — build games, animations, and stories."
+    art: /art/scratch.png
 
   # --- Web (browser is base; URL added via parent console) ----------------
   - id: pbskids
@@ -128,7 +140,7 @@ titles:
     subject: general
     min_age: 3
     blurb: "Free games and videos from PBS Kids."
-    art: pbskids.png
+    art: /art/pbskids.png
 
   # --- User-supplied content (parent adds data; enrolled via wizard) -------
   # ScummVM, DOSBox, Ruffle, and custom web/exec entries are added through

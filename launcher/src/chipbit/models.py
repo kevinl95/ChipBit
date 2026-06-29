@@ -54,6 +54,7 @@ class CatalogTitle:
     min_age: int | None = None
     blurb: str | None = None
     art: str | None = None
+    user_dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -467,6 +468,11 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         if swf is None:
             return None
 
+    raw_user_dirs = raw_title.get("user_dirs") or []
+    user_dirs: tuple[str, ...] = ()
+    if isinstance(raw_user_dirs, list):
+        user_dirs = tuple(d for d in raw_user_dirs if isinstance(d, str) and d.strip())
+
     return CatalogTitle(
         id=title_id,
         label=label,
@@ -485,6 +491,7 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         min_age=min_age,
         blurb=blurb,
         art=art,
+        user_dirs=user_dirs,
     )
 
 

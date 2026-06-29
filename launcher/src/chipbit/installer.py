@@ -61,6 +61,7 @@ class _ManagerDefinition:
     check_argv: Callable[[str, str], list[str]]
     install_argv: Callable[[tuple[str, ...], str], list[str]]
     is_installed: Callable[[subprocess.CompletedProcess[str]], bool]
+    pre_install_argv: list[str] | None = None
 
 
 def ensure_install_spec_installed(
@@ -130,17 +131,36 @@ def ensure_install_spec_installed(
             manager=manager_name,
             packages=packages,
         )
+        if manager.pre_install_argv is not None:
+            yield InstallProgress(
+                step="installing",
+                message=f"Updating package lists via {manager_name}",
+                manager=manager_name,
+                packages=packages,
+            )
+            update_result = _run_command(
+                manager.pre_install_argv, runner=runner, timeout=120.0
+            )
+            if update_result.returncode != 0:
+                detail = (update_result.stderr + "\n" + update_result.stdout).strip()
+                raise InstallationError(
+                    f"{manager_name} package list update failed: "
+                    f"{detail or 'unknown error'}"
+                )
+
         install_result = _run_command(
             _rewrite_python_executable(
                 manager.install_argv(packages, flatpak_remote),
                 python_executable=executable,
             ),
             runner=runner,
+            timeout=600.0,
         )
         if install_result.returncode != 0:
+            detail = (install_result.stderr + "\n" + install_result.stdout).strip()
             raise InstallationError(
                 f"{manager_name} install failed for {', '.join(packages)}: "
-                f"{install_result.stderr.strip() or 'unknown error'}"
+                f"{detail or 'unknown error'}"
             )
 
         yield InstallProgress(
@@ -315,10 +335,17 @@ def _manager_definitions() -> dict[str, _ManagerDefinition]:
                 "--showformat=${Status}",
                 package,
             ],
+            pre_install_argv=[
+                "sudo", "apt-get", "update", "-qq",
+                "-o", "DPkg::Lock::Timeout=60",
+            ],
             install_argv=lambda packages, _remote: [
+                "sudo",
                 "apt-get",
                 "install",
                 "-y",
+                "--no-install-recommends",
+                "-o", "DPkg::Lock::Timeout=60",
                 *packages,
             ],
             is_installed=lambda result: result.returncode == 0
@@ -383,13 +410,18 @@ def _run_command(
     argv: Iterable[str],
     *,
     runner: CommandRunner,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return runner(
-        list(argv),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    kwargs: dict[str, object] = {"check": False, "capture_output": True, "text": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    try:
+        return runner(list(argv), **kwargs)  # type: ignore[call-overload]
+    except subprocess.TimeoutExpired as exc:
+        raise InstallationError(
+            f"command timed out after {timeout:.0f}s — "
+            "dpkg lock may be held by another process; try again in a moment"
+        ) from exc
 
 
 def _normalize_package_name(package: object, manager_name: str) -> str:

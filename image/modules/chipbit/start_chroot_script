@@ -25,6 +25,10 @@ CHIPBIT_CONTROL_PORT="${CHIPBIT_CONTROL_PORT:-8765}"
 # ---------------------------------------------------------------------------
 # 1. Base engines and compositor
 # ---------------------------------------------------------------------------
+# Never prompt for input — we are running fully noninteractive inside qemu.
+export DEBIAN_FRONTEND=noninteractive
+export DEBCONF_NONINTERACTIVE_SEEN=true
+
 # Ensure /tmp is writable before apt runs.  Pi OS Bookworm mounts /tmp as
 # tmpfs at runtime via systemd; in a chroot that service doesn't start, so
 # we fix the mode explicitly.
@@ -36,21 +40,67 @@ cat > /etc/apt/apt.conf.d/99-chipbit-build <<'EOF'
 Acquire::http::Timeout "60";
 Acquire::https::Timeout "60";
 Acquire::Retries "3";
+Acquire::ForceIPv4 "true";
 EOF
 
-apt-get update -y
-apt-get install -y --no-install-recommends \
-    cage \
-    xwayland \
-    dbus \
-    scummvm \
-    chromium-browser \
-    python3-pip \
-    python3-yaml \
-    python3-evdev \
-    curl \
-    ca-certificates \
-    openssh-server
+# Stub out mandb so the man-db dpkg trigger doesn't run under qemu-arm
+# emulation (it would grind for tens of minutes rebuilding the index).
+# This is a kiosk appliance — man pages are never used at runtime.
+dpkg-divert --local --rename --add /usr/bin/mandb > /dev/null 2>&1 || true
+ln -sf /bin/true /usr/bin/mandb
+
+# The raspbian.raspberrypi.com CDN uses MirrorBrain to redirect downloads to
+# the nearest geographic mirror.  That mirror can lag hours behind on security
+# updates, causing 404s even though the package exists.  Pin directly to a
+# mirror confirmed to be current, bypassing the CDN redirect entirely.
+sed -i 's|http://raspbian.raspberrypi.com/raspbian|http://mirror.fcix.net/raspbian/raspbian|g' \
+    /etc/apt/sources.list
+
+# Add the full Debian Bookworm repos for packages not in Raspbian (marble,
+# kstars, supertux, supertuxkart, etc.).  archive.raspberrypi.com is already
+# present in /etc/apt/sources.list.d/raspi.list so we don't repeat it here.
+cat > /etc/apt/sources.list.d/debian-bookworm.list <<'EOF'
+deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+EOF
+
+# Bootstrap the Debian archive keyring.  debian-archive-keyring lives in the
+# Debian repos we just added, but we need it to trust those repos — chicken and
+# egg.  Fetch the package lists ignoring signatures, install just the keyring
+# package unauthenticated (it contains only public key material, not code), then
+# all subsequent apt calls are fully signature-verified.
+apt-get -o Acquire::AllowInsecureRepositories=true update -qq 2>/dev/null || true
+apt-get install -y --no-install-recommends --allow-unauthenticated debian-archive-keyring
+
+# Re-fetch the package index and install.  Retried up to 3 times with a
+# 60-second pause in case mirrors are mid-sync on a security update batch.
+for _attempt in 1 2 3; do
+    apt-get update -y
+    apt-get install -y --no-install-recommends \
+        cage \
+        xwayland \
+        dbus \
+        chromium-browser \
+        python3-installer \
+        python3-yaml \
+        python3-evdev \
+        qtwayland5 \
+        pipewire \
+        pipewire-pulse \
+        wireplumber \
+        alsa-utils \
+        iw \
+        rfkill \
+        wireless-regdb \
+        curl \
+        ca-certificates \
+        openssh-server \
+        parted \
+    && break
+    echo "apt-get install attempt ${_attempt} failed; waiting 60s for mirrors to sync..."
+    sleep 60
+done
 
 # dosbox-staging is not available in all Pi OS repo flavours (notably armhf).
 # Fall back to the original dosbox and symlink it so the launcher service
@@ -97,6 +147,80 @@ if [ -n "${BUNDLED_PKGS}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2a. Catalog artwork — fetch icons for all titles
+# ---------------------------------------------------------------------------
+# Icons are pulled from package files (already on disk for bundled titles, or
+# downloaded via apt for non-bundled ones) so no binary files live in the repo.
+# Any title without art here shows the built-in default SVG at runtime.
+mkdir -p /usr/share/chipbit/art
+
+_art_from_installed() {
+    # Try standard on-disk icon paths; return 1 if none found so callers can
+    # fall back to _art_from_deb.
+    local artname="$1" pkg="$2"
+    local size src
+    for size in 256x256 128x128 64x64 48x48; do
+        for name in "${artname}" "${pkg}"; do
+            src="/usr/share/icons/hicolor/${size}/apps/${name}.png"
+            if [ -f "$src" ]; then
+                cp "$src" "/usr/share/chipbit/art/${artname}.png"
+                return 0
+            fi
+        done
+    done
+    for name in "${artname}" "${pkg}"; do
+        src="/usr/share/pixmaps/${name}.png"
+        if [ -f "$src" ]; then
+            cp "$src" "/usr/share/chipbit/art/${artname}.png"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_art_from_deb() {
+    # Download a package's .deb and extract its highest-resolution icon.
+    # Every find/ls is guarded with || true so set -e can't fire on a missing dir.
+    local artname="$1" pkg="$2"
+    local tmpdir icon deb size
+    tmpdir="$(mktemp -d)"
+    (cd "$tmpdir" && apt-get download "${pkg}" 2>/dev/null) || true
+    deb="$(ls "${tmpdir}"/*.deb 2>/dev/null | head -1)" || true
+    if [ -n "$deb" ]; then
+        dpkg -x "$deb" "${tmpdir}/u/" 2>/dev/null || true
+        icon=""
+        for size in 256x256 128x128 64x64 48x48; do
+            icon="$(find "${tmpdir}/u/usr/share/icons/hicolor/${size}/apps/" \
+                    -name "*.png" 2>/dev/null | head -1)" || true
+            if [ -n "$icon" ]; then break; fi
+        done
+        if [ -z "$icon" ]; then
+            icon="$(find "${tmpdir}/u/usr/share/pixmaps/" \
+                    -name "*.png" 2>/dev/null | head -1)" || true
+        fi
+        if [ -n "$icon" ]; then
+            cp "$icon" "/usr/share/chipbit/art/${artname}.png"
+        else
+            echo "Warning: no icon extracted from ${pkg}"
+        fi
+    else
+        echo "Warning: apt-get download failed for ${pkg}"
+    fi
+    rm -rf "$tmpdir"
+}
+
+# Extract artwork for every catalog title that has an apt install spec.
+# emit_title_art.py outputs "<id> <first-apt-package>" for each such title.
+# Try on-disk icons first (fast, no download); fall back to downloading the deb.
+# Adding a new catalog title requires no changes here.
+ART_HELPER=/usr/share/chipbit/emit_title_art.py
+while IFS=' ' read -r _artname _pkg; do
+    _art_from_installed "${_artname}" "${_pkg}" \
+        || _art_from_deb "${_artname}" "${_pkg}"
+done < <(python3 "${ART_HELPER}" "${CATALOG}")
+unset _artname _pkg
+
+# ---------------------------------------------------------------------------
 # 3. Kiosk system user
 # ---------------------------------------------------------------------------
 # Pi OS Bookworm base images pre-create a 'pi' user/group at UID/GID 1000.
@@ -126,6 +250,18 @@ fi
 chown -R chipbit:chipbit /home/chipbit
 chmod 700 /home/chipbit
 
+# Pre-create XDG base directories so launched apps can write their data on
+# first run.  Apps that use legacy ~/.appname paths will create those themselves
+# as long as HOME is set correctly in the launcher service environment.
+mkdir -p /home/chipbit/.config \
+         /home/chipbit/.local/share \
+         /home/chipbit/.cache \
+         /home/chipbit/.tuxpaint
+chown -R chipbit:chipbit /home/chipbit/.config \
+                         /home/chipbit/.local \
+                         /home/chipbit/.cache \
+                         /home/chipbit/.tuxpaint
+
 # Set a recovery password so the console is accessible if the kiosk fails.
 # Override at build time with CHIPBIT_PASSWORD env var; default is "chipbit".
 echo "chipbit:${CHIPBIT_PASSWORD:-chipbit}" | chpasswd
@@ -136,13 +272,72 @@ echo "chipbit ALL=(ALL) NOPASSWD: /usr/bin/localectl set-x11-keymap *" \
     > /etc/sudoers.d/chipbit-localectl
 chmod 0440 /etc/sudoers.d/chipbit-localectl
 
+# Allow WiFi management from the web service (a system service with no logind
+# session, so polkit blocks nmcli without this).  Scoped to the exact
+# subcommands needed — connect, radio toggle, rfkill unblock.
+cat > /etc/sudoers.d/chipbit-nmcli <<'EOF'
+chipbit ALL=(root) NOPASSWD: /usr/bin/nmcli *
+chipbit ALL=(root) NOPASSWD: /usr/bin/rfkill unblock wifi
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-nmcli
+
+# Allow on-demand package installation (e.g. Marble, KStars) from the launcher.
+cat > /etc/sudoers.d/chipbit-apt <<'EOF'
+Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"
+chipbit ALL=(root) NOPASSWD: /usr/bin/apt-get update *
+chipbit ALL=(root) NOPASSWD: /usr/bin/apt-get install *
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-apt
+
+# Allow the web service to restart systemd-timesyncd after WiFi connects,
+# so the clock syncs before any apt operations run during enrollment.
+cat > /etc/sudoers.d/chipbit-timesyncd <<'EOF'
+chipbit ALL=(root) NOPASSWD: /usr/bin/systemctl restart systemd-timesyncd
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-timesyncd
+
+# Allow the web service to read system journal entries for diagnostics.
+cat > /etc/sudoers.d/chipbit-logs <<'EOF'
+chipbit ALL=(root) NOPASSWD: /usr/bin/journalctl *
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-logs
+
 # Grant groups needed for evdev, audio, and GPU access.
 # adm: read system journal without sudo.  sudo: recovery access.
-for grp in input audio video tty seat render adm sudo netdev; do
+for grp in input audio video tty seat render adm sudo netdev systemd-journal; do
     if getent group "${grp}" > /dev/null; then
         usermod -aG "${grp}" chipbit
     fi
 done
+
+# Enable PipeWire audio as a user service for the chipbit account.
+# PipeWire (and its session manager wireplumber) run per-user under systemd
+# --user; enabling them here means they start automatically on login.
+systemctl --global enable \
+    pipewire.socket pipewire.service \
+    pipewire-pulse.socket pipewire-pulse.service \
+    wireplumber.service \
+    2>/dev/null || true
+
+# Enable linger so systemd starts the chipbit user instance at boot, not only on
+# interactive login.  chipbit-kiosk pre-creates /run/user/1000 but without linger
+# the user services (PipeWire) never start, so SDL2/TuxPaint can't find audio.
+mkdir -p /var/lib/systemd/linger
+touch /var/lib/systemd/linger/chipbit
+
+# Allow the chipbit web service to trigger WiFi scans and manage connections via
+# NetworkManager without a polkit interactive session.  As a system service the
+# chipbit process has no logind session, so without this rule nmcli --rescan yes
+# is denied and "No network with SSID found" errors occur on every connect attempt.
+mkdir -p /etc/polkit-1/rules.d
+cat > /etc/polkit-1/rules.d/50-chipbit-network.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager") === 0 &&
+            subject.user === "chipbit") {
+        return polkit.Result.YES;
+    }
+});
+EOF
 
 # ---------------------------------------------------------------------------
 # Kiosk: the autologin.conf drop-in (already in the filesystem overlay) makes
@@ -165,6 +360,56 @@ done
 # ---------------------------------------------------------------------------
 echo "chipbit" > /etc/hostname
 sed -i 's/raspberrypi/chipbit/g' /etc/hosts 2>/dev/null || true
+
+# Pi OS first-boot setup normally prompts for WiFi country code; since we
+# bypass that, set it here.  Without it the BCM43456 won't scan any channels.
+WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
+echo "REGDOMAIN=${WIFI_COUNTRY}" > /etc/default/crda
+
+# crda reads /etc/default/crda but only fires via a udev event that can race
+# or miss entirely with brcmfmac.  This oneshot service is the belt-and-suspenders:
+# it runs before NetworkManager so the radio is unblocked and the domain is set
+# before NM starts its first background scan.
+cat > /etc/systemd/system/chipbit-wifi-country.service <<EOF
+[Unit]
+Description=Unblock WiFi radio and set regulatory domain
+Before=NetworkManager.service wpa_supplicant.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/rfkill unblock wifi
+ExecStart=/usr/sbin/iw reg set ${WIFI_COUNTRY}
+
+[Install]
+WantedBy=sysinit.target
+EOF
+systemctl enable chipbit-wifi-country.service
+
+# Pi OS base images can ship NetworkManager with managed=false (a legacy flag
+# that hands WiFi to dhcpcd/wpa_supplicant instead).  Force managed=true so
+# nmcli can scan and connect — without this, device wifi list returns nothing.
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/10-chipbit.conf <<'EOF'
+[main]
+plugins=keyfile
+
+[ifupdown]
+managed=true
+EOF
+
+# NM persists radio state in this file.  Seeding it with WifiEnabled=true
+# prevents the radio starting soft-blocked on first boot (seen on Pi 400 when
+# no country code was set during initial image flash).
+mkdir -p /var/lib/NetworkManager
+cat > /var/lib/NetworkManager/NetworkManager.state <<'EOF'
+[main]
+NetworkingEnabled=true
+WifiEnabled=true
+WWANEnabled=true
+EOF
+
 mkdir -p /var/lib/chipbit
 chown chipbit:chipbit /var/lib/chipbit
 chmod 0755 /var/lib/chipbit
@@ -178,15 +423,23 @@ chmod 0755 /games
 # ---------------------------------------------------------------------------
 # The wheel was built on the host and landed in the filesystem overlay at
 # filesystem/tmp/; after the overlay merge it's at /tmp/chipbit-*.whl.
-pip3 install --break-system-packages /usr/share/chipbit/chipbit-*.whl
+python3 -m installer /usr/share/chipbit/chipbit-*.whl
 rm -f /usr/share/chipbit/chipbit-*.whl
 
 # ---------------------------------------------------------------------------
 # 6. Enable systemd services
 # ---------------------------------------------------------------------------
+chmod 755 /usr/local/sbin/chipbit-expand-rootfs
+chmod 755 /usr/local/bin/supertuxkart-x11
+systemctl enable chipbit-expand-rootfs.service
+systemctl enable chipbit-xwayland.service
 systemctl enable chipbit-kiosk.service
 systemctl enable chipbit-launcher.service
 systemctl enable chipbit-web.service
+
+# Sentinel that tells chipbit-expand-rootfs to run on first boot.
+# Deleted by the script after it resizes; subsequent boots skip it.
+touch /var/lib/chipbit/.rootfs-needs-expand
 # Mask getty@tty1 — chipbit-kiosk.service owns VT1 via PAMName=login + TTYPath.
 systemctl mask getty@tty1.service
 
@@ -218,3 +471,7 @@ done
 # ---------------------------------------------------------------------------
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+# Remove the saved timesync timestamp so the Pi doesn't boot thinking it's
+# build-time.  systemd-timesyncd will sync from NTP after the first network
+# connection instead of anchoring to a stale build-machine timestamp.
+rm -f /var/lib/systemd/timesync/clock

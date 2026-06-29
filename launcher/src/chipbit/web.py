@@ -43,6 +43,15 @@ log = logging.getLogger(__name__)
 
 DEFAULT_EVENT_POLL_SECS = 1.0
 
+# Served for any /art/<name> that doesn't exist on disk — generic app placeholder.
+_DEFAULT_ART_SVG: bytes = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">'
+    b'<rect width="200" height="200" rx="24" fill="#6d28d9"/>'
+    b'<circle cx="100" cy="100" r="58" fill="rgba(255,255,255,0.15)"/>'
+    b'<polygon points="82,68 82,132 142,100" fill="white"/>'
+    b"</svg>"
+)
+
 PAGE_CSS = dedent("""
     :root {
       color-scheme: light;
@@ -223,19 +232,88 @@ PAGE_CSS = dedent("""
         box-sizing: border-box;
       }
     }
+    .spinner {
+      width: 2.2rem;
+      height: 2.2rem;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 0.75rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .connecting-box {
+      text-align: center;
+      padding: 2rem 1rem;
+      color: var(--muted);
+    }
+    .op-overlay {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 99;
+      background: var(--panel);
+      border-top: 3px solid var(--accent);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      box-shadow: 0 -4px 24px rgba(22,33,44,.18);
+    }
+    .op-overlay[hidden] { display: none; }
+    .op-overlay .spinner {
+      width: 1.5rem;
+      height: 1.5rem;
+      border-width: 3px;
+      margin: 0;
+      flex-shrink: 0;
+    }
+    .op-overlay-text strong {
+      display: block;
+    }
+    .op-overlay-text span {
+      color: var(--muted);
+      font-size: .9rem;
+    }
     """).strip()
 
 PARENT_EVENTS_SCRIPT = dedent("""
+    var overlay = document.getElementById('op-overlay');
+    var overlayTitle = document.getElementById('op-overlay-title');
+    var overlayMsg = document.getElementById('op-overlay-msg');
+    var badge = document.getElementById('live-mode');
+    var tapBanner = document.getElementById('tap-now-banner');
+
+    var enrollInProgress = false;
+    var overlayPinned = false;  // true while an error is displayed; SSE won't clear it
+
+    function showOverlay(title, msg) {
+      if (overlayTitle) overlayTitle.textContent = title;
+      if (overlayMsg) overlayMsg.textContent = msg;
+      if (overlay) overlay.hidden = false;
+    }
+    function hideOverlay() {
+      if (overlay) overlay.hidden = true;
+    }
+
     const events = new EventSource('/events');
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
-      const badge = document.getElementById('live-mode');
-      const detail = document.getElementById('live-detail');
-      const tapBanner = document.getElementById('tap-now-banner');
       if (badge) badge.textContent = state.mode;
-      if (detail) detail.textContent = state.operation ? state.operation.message : '';
       if (tapBanner) {
         tapBanner.style.display = (state.status && state.status.capture_mode) ? '' : 'none';
+      }
+      if (state.operation) {
+        showOverlay(
+          state.operation.title || 'Working…',
+          state.operation.message || ''
+        );
+        document.querySelectorAll('.enroll-form button[disabled]').forEach(function(btn) {
+          btn.textContent = state.operation.message || 'Working…';
+        });
+      } else if (!enrollInProgress && !overlayPinned) {
+        hideOverlay();
       }
     };
 
@@ -247,13 +325,32 @@ PARENT_EVENTS_SCRIPT = dedent("""
           btn.disabled = true;
           btn.textContent = 'Waiting for card…';
         }
+        enrollInProgress = true;
+        overlayPinned = false;
+        showOverlay('Enrolling…', 'Tap your card to the reader now');
         fetch(form.action, {
           method: 'POST',
           body: '',
           headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        }).catch(function() {}).then(function() {
-          window.location.replace('/');
-        });
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            enrollInProgress = false;
+            if (data.ok) {
+              window.location.replace('/');
+            } else {
+              overlayPinned = true;
+              showOverlay('Enrollment failed', data.error || 'Something went wrong.');
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Try again';
+              }
+            }
+          })
+          .catch(function() {
+            enrollInProgress = false;
+            window.location.replace('/');
+          });
       });
     });
     """).strip()
@@ -268,7 +365,7 @@ FIRST_RUN_EVENTS_SCRIPT = dedent("""
         if (detail) detail.textContent = state.operation ? state.operation.message : '';
         if (state.has_admin_card) {
             events.close();
-            window.location.replace('/');
+            window.location.replace('/setup');
         }
     };
     """).strip()
@@ -456,22 +553,91 @@ KIOSK_EVENTS_SCRIPT = dedent("""
 
 WIFI_SCAN_SCRIPT = dedent("""
     (function () {
-      var input = document.getElementById('ssid-input');
-      var list  = document.getElementById('ssid-list');
-      if (!input || !list) { return; }
+      var sel = document.getElementById('ssid-select');
+      var manRow = document.getElementById('ssid-manual-row');
+      var manInput = document.getElementById('ssid-manual-input');
+      if (!sel) { return; }
+
+      sel.addEventListener('change', function () {
+        if (sel.value === '__other__') {
+          sel.removeAttribute('name');
+          sel.removeAttribute('required');
+          manRow.hidden = false;
+          manInput.name = 'ssid';
+          manInput.required = true;
+        } else {
+          sel.name = 'ssid';
+          sel.required = true;
+          manRow.hidden = true;
+          manInput.removeAttribute('name');
+          manInput.required = false;
+        }
+      });
+
+      function populate(ssids) {
+        sel.innerHTML = '';
+        ssids.forEach(function (ssid) {
+          var o = document.createElement('option');
+          o.value = ssid;
+          o.textContent = ssid;
+          sel.appendChild(o);
+        });
+        var other = document.createElement('option');
+        other.value = '__other__';
+        other.textContent = ssids.length ? 'Other…' : 'No networks found — enter manually';
+        sel.appendChild(other);
+        if (ssids.length === 0) {
+          sel.value = '__other__';
+          sel.dispatchEvent(new Event('change'));
+        }
+      }
+
       fetch('/wifi/scan')
         .then(function (r) { return r.json(); })
-        .then(function (ssids) {
-          input.placeholder = ssids.length
-            ? 'Select a network or type one'
-            : 'Type network name';
-          ssids.forEach(function (ssid) {
-            var o = document.createElement('option');
-            o.value = ssid;
-            list.appendChild(o);
-          });
+        .then(populate)
+        .catch(function () { populate([]); });
+    })();
+    """).strip()
+
+WIFI_CONNECT_SCRIPT = dedent("""
+    (function () {
+      var form = document.getElementById('wifi-form');
+      var connectingBox = document.getElementById('wifi-connecting');
+      var connectMsg = document.getElementById('wifi-connect-msg');
+      var errorBox = document.getElementById('wifi-connect-error');
+      if (!form) { return; }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        form.hidden = true;
+        connectingBox.hidden = false;
+        errorBox.hidden = true;
+
+        var body = new URLSearchParams(new FormData(form)).toString();
+        fetch('/setup/wifi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body,
         })
-        .catch(function () { input.placeholder = 'Type network name'; });
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              connectMsg.textContent = 'Connected! Taking you to the admin page…';
+              setTimeout(function () { window.location.replace('/'); }, 1200);
+            } else {
+              connectingBox.hidden = true;
+              form.hidden = false;
+              errorBox.textContent = data.error || 'Connection failed.';
+              errorBox.hidden = false;
+            }
+          })
+          .catch(function () {
+            connectingBox.hidden = true;
+            form.hidden = false;
+            errorBox.textContent = 'Could not reach the server. Please try again.';
+            errorBox.hidden = false;
+          });
+      });
     })();
     """).strip()
 
@@ -498,6 +664,9 @@ class ControlClient:
 
     def lock(self) -> dict[str, object]:
         return self._request_json("POST", "/lock")
+
+    def unlock(self) -> dict[str, object]:
+        return self._request_json("POST", "/unlock")
 
     def capture(self) -> str:
         # Use a generous timeout: the launcher holds the connection open until a
@@ -632,7 +801,8 @@ class WebApp:
                   <div class="kiosk-spinner" id="kiosk-spinner"></div>
                 </section>
                 <section class="kiosk-art-frame" id="kiosk-art-frame" hidden>
-                  <img class="kiosk-art" id="kiosk-art" alt="" />
+                  <img class="kiosk-art" id="kiosk-art" alt=""
+                       onerror="this.src='/art/default';this.onerror=null;" />
                 </section>
               </section>
             </main>
@@ -661,14 +831,18 @@ class WebApp:
 
     def event_payload(self) -> dict[str, object]:
         cards = load_cards(self.cards_path)
-        status = self.control.status()
+        has_admin_card = "unlock" in cards.system_cards
+        try:
+            status = self.control.status()
+        except ControlApiError:
+            status = {}
         operation = self._operation_snapshot()
         return {
             "mode": self._mode(cards, status),
             "status": status,
             "operation": operation,
             "kiosk": self._kiosk_state(cards, status, operation),
-            "has_admin_card": "unlock" in cards.system_cards,
+            "has_admin_card": has_admin_card,
             "title_cards": len(cards.title_cards),
             "system_cards": len(cards.system_cards),
         }
@@ -810,15 +984,7 @@ class WebApp:
         if not normalized_ssid:
             raise ValueError("ssid is required")
 
-        # Trigger a fresh scan so nmcli can see nearby networks before connecting.
-        self.runner(
-            ["nmcli", "-w", "10", "device", "wifi", "rescan"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-        argv = ["nmcli", "device", "wifi", "connect", normalized_ssid]
+        argv = ["sudo", "nmcli", "device", "wifi", "connect", normalized_ssid]
         if password:
             argv.extend(["password", password])
         result = self.runner(argv, check=False, capture_output=True, text=True)
@@ -834,7 +1000,7 @@ class WebApp:
             result = self.runner(
                 [
                     "nmcli", "-f", "SSID", "-t", "-e", "no",
-                    "device", "wifi", "list", "--rescan", "yes",
+                    "device", "wifi", "list", "--rescan", "auto",
                 ],
                 check=False,
                 capture_output=True,
@@ -850,6 +1016,118 @@ class WebApp:
                 seen.add(ssid)
                 ssids.append(ssid)
         return ssids
+
+    def render_setup(self, *, message: str = "", error: str = "") -> str:
+        """First-run WiFi setup page — shown once after admin card enrollment."""
+        flash = self._flash(message, error)
+        return dedent(f"""
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>ChipBit Setup</title>
+              <style>{PAGE_CSS}</style>
+            </head>
+            <body>
+              <main>
+                <header class="site-header">
+                  <h1 class="site-title">ChipBit Setup</h1>
+                </header>
+                {flash}
+                <section class="panel panel-wide">
+                  <h2>Connect to Wi-Fi</h2>
+                  <p>
+                    Some activities (like Marble, KStars, and SuperTux) download and
+                    install when a card is first enrolled. They need an internet
+                    connection the first time. You can skip this and connect later
+                    in Settings.
+                  </p>
+                  <p id="wifi-connect-error" class="flash error" hidden></p>
+                  <form id="wifi-form" method="post" action="/setup/wifi" class="wifi-form">
+                    <label>Network
+                      <select id="ssid-select" name="ssid" required>
+                        <option value="" disabled selected>Scanning…</option>
+                      </select>
+                    </label>
+                    <div id="ssid-manual-row" hidden>
+                      <label>Network name
+                        <input type="text" id="ssid-manual-input" autocomplete="off" />
+                      </label>
+                    </div>
+                    <label>Password
+                      <input type="password" name="password" />
+                    </label>
+                    <button type="submit">Connect and continue</button>
+                  </form>
+                  <div id="wifi-connecting" class="connecting-box" hidden>
+                    <div class="spinner"></div>
+                    <p id="wifi-connect-msg">Connecting…</p>
+                  </div>
+                  <script>{WIFI_SCAN_SCRIPT}</script>
+                  <script>{WIFI_CONNECT_SCRIPT}</script>
+                  <p class="muted">
+                    <a href="/">Skip — I'll connect later</a>
+                    &nbsp;·&nbsp;
+                    <a href="/debug">Diagnostics</a>
+                  </p>
+                </section>
+              </main>
+            </body>
+            </html>
+        """).strip()
+
+    def wifi_diagnostics(self, *, message: str = "") -> str:
+        """Run a set of read-only diagnostic commands and return their output."""
+        cmds = [
+            ("Launcher log", [
+                "sudo", "journalctl", "-u", "chipbit-launcher",
+                "--no-pager", "-n", "60", "--output=short-monotonic",
+            ]),
+            ("Disk space", ["df", "-h", "/"]),
+            ("Root filesystem expand log", [
+                "sudo", "journalctl", "-u", "chipbit-expand-rootfs",
+                "--no-pager", "--output=short-monotonic",
+            ]),
+            ("WiFi radio", ["nmcli", "radio", "wifi"]),
+            ("Network devices", ["nmcli", "device", "status"]),
+            ("Nearby networks", [
+                "nmcli", "-f", "SSID,SIGNAL,SECURITY", "-e", "no",
+                "device", "wifi", "list", "--rescan", "no",
+            ]),
+        ]
+        sections: list[str] = []
+        for label, argv in cmds:
+            try:
+                r = self.runner(argv, check=False, capture_output=True, text=True)
+                out = (r.stdout + r.stderr).strip() or "(no output)"
+            except OSError as exc:
+                out = f"(command not found: {exc})"
+            sections.append(f"<h3>{escape(label)}</h3><pre>{escape(out)}</pre>")
+        body = "\n".join(sections)
+        flash = f'<p style="color:green">{escape(message)}</p>' if message else ""
+        return f"""<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><title>ChipBit diagnostics</title>
+<style>body{{font-family:monospace;padding:1rem}}pre{{background:#f4f4f4;padding:.5rem;white-space:pre-wrap}}</style>
+</head><body><h1>ChipBit diagnostics</h1>{flash}
+<form method="post" action="/debug/wifi-enable" style="margin-bottom:1rem">
+  <button type="submit">Unblock radio + enable WiFi</button>
+  <span style="margin-left:.5rem;font-size:.9em">
+    (runs rfkill unblock wifi &amp;&amp; nmcli radio wifi on)
+  </span>
+</form>
+{body}
+<p><a href="/">&#8592; Back to parent console</a></p>
+</body></html>"""
+
+    def wifi_enable(self) -> str:
+        """Unblock the radio and tell NetworkManager to turn WiFi on."""
+        self.runner(["sudo", "rfkill", "unblock", "wifi"], check=False, capture_output=True, text=True)
+        result = self.runner(["sudo", "nmcli", "radio", "wifi", "on"], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            err = (result.stderr + result.stdout).strip()
+            raise RuntimeError(f"nmcli radio wifi on failed: {err}")
+        return "WiFi radio enabled — try scanning now"
 
     def create_custom_title(self, form: dict[str, str]) -> str:
         import re
@@ -992,6 +1270,11 @@ class WebApp:
                 This page will update automatically.
               </p>
               {playing}
+              <p class="muted" style="margin-top:1.5rem">
+                <a href="/debug">Diagnostics</a>
+                &nbsp;·&nbsp;
+                <a href="/setup">WiFi setup</a>
+              </p>
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -1022,6 +1305,13 @@ class WebApp:
 
         admin_uid = escape(cards.system_cards["unlock"].uid)
         section = dedent(f"""
+            <div id="op-overlay" class="op-overlay" hidden>
+              <div class="spinner"></div>
+              <div class="op-overlay-text">
+                <strong id="op-overlay-title"></strong>
+                <span id="op-overlay-msg"></span>
+              </div>
+            </div>
             <div id="tap-now-banner" class="flash ok" style="display:none">
               Hold your card to the reader now — waiting up to 30 seconds.
             </div>
@@ -1104,18 +1394,24 @@ class WebApp:
               <h2>Settings</h2>
               <h3>Wi-Fi</h3>
               <form method="post" action="/wifi/connect" class="wifi-form">
-                <label>Network name
-                  <input type="text" name="ssid" id="ssid-input"
-                         list="ssid-list" placeholder="Scanning…"
-                         autocomplete="off" required />
-                  <datalist id="ssid-list"></datalist>
+                <label>Network
+                  <select id="ssid-select" name="ssid" required>
+                    <option value="" disabled selected>Scanning…</option>
+                  </select>
                 </label>
+                <div id="ssid-manual-row" hidden>
+                  <label>Network name
+                    <input type="text" id="ssid-manual-input"
+                           autocomplete="off" />
+                  </label>
+                </div>
                 <label>Password
                   <input type="password" name="password" />
                 </label>
                 <button type="submit">Connect</button>
               </form>
               <script>{WIFI_SCAN_SCRIPT}</script>
+              <p class="muted"><a href="/debug">Diagnostics</a></p>
               <h3>Keyboard layout</h3>
               <form method="post" action="/settings/keyboard" class="inline-form">
                 <select name="layout">
@@ -1265,8 +1561,10 @@ class WebApp:
                 "body": "Launching now.",
             }
             current_art = status.get("current_art")
-            if isinstance(current_art, str) and current_art:
-                kiosk["art"] = current_art
+            kiosk["art"] = (
+                current_art if isinstance(current_art, str) and current_art
+                else "/art/default"
+            )
             return kiosk
 
         last_event = status.get("last_event")
@@ -1408,6 +1706,7 @@ def create_web_server(
     user_catalog_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
+    art_root = catalog_path.parent / "art"
     app = WebApp(
         catalog_path=catalog_path,
         cards_path=cards_path,
@@ -1449,6 +1748,9 @@ def create_web_server(
                 if path in ("/", "/admin"):
                     self._send_html(200, app.render_index())
                     return
+                if path == "/setup":
+                    self._send_html(200, app.render_setup())
+                    return
                 if path == "/kiosk":
                     cards = load_cards(app.cards_path)
                     if "unlock" not in cards.system_cards:
@@ -1468,15 +1770,86 @@ def create_web_server(
                     self.end_headers()
                     self.wfile.write(body)
                     return
+                if path == "/debug":
+                    self._send_html(200, app.wifi_diagnostics())
+                    return
             except (ConfigLoadError, ControlApiError) as exc:
                 self._send_html(502, app.render_index(error=str(exc)))
                 return
 
+            if path.startswith("/art/"):
+                name = path[len("/art/"):]
+                if name and "/" not in name and not name.startswith("."):
+                    art_file = art_root / name
+                    try:
+                        data = art_file.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/png")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    except OSError:
+                        pass
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(_DEFAULT_ART_SVG)))
+                self.end_headers()
+                self.wfile.write(_DEFAULT_ART_SVG)
+                return
+
             self._send_html(404, app.render_index(error="not found"))
+
+        def _send_json(self, code: int, payload: dict) -> None:
+            body = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path
             form = self._read_form()
+            if path == "/setup/wifi":
+                try:
+                    app.configure_wifi(form.get("ssid", ""), form.get("password"))
+                    try:
+                        app.control.unlock()
+                    except Exception:
+                        pass
+                    # Kick NTP sync — Pi has no RTC so the clock is wrong at boot.
+                    # Fire-and-forget; sync completes in the background within seconds.
+                    try:
+                        app.runner(
+                            ["sudo", "systemctl", "restart", "systemd-timesyncd"],
+                            check=False, capture_output=True, text=True,
+                        )
+                    except Exception:
+                        pass
+                    body = json.dumps({"ok": True}).encode()
+                except Exception as exc:
+                    body = json.dumps({"error": str(exc)}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/debug/wifi-enable":
+                try:
+                    msg = app.wifi_enable()
+                except Exception as exc:
+                    msg = f"Error: {exc}"
+                self._send_html(200, app.wifi_diagnostics(message=msg))
+                return
+            # Slow enrollment paths return JSON so the browser can show errors
+            # inline without losing context. Quick setting paths stay HTML.
+            want_json = (
+                path == "/admin/enroll"
+                or (path.startswith("/titles/") and path.endswith("/enroll"))
+                or (path.startswith("/cards/") and path.endswith("/reassign"))
+            )
             try:
                 if path == "/admin/enroll":
                     message = app.enroll_admin()
@@ -1506,7 +1879,10 @@ def create_web_server(
                     self._send_html(404, app.render_index(error="not found"))
                     return
             except PermissionError as exc:
-                self._send_html(403, app.render_index(error=str(exc)))
+                if want_json:
+                    self._send_json(403, {"error": str(exc)})
+                else:
+                    self._send_html(403, app.render_index(error=str(exc)))
                 return
             except (
                 ValueError,
@@ -1517,10 +1893,16 @@ def create_web_server(
                 ConfigLoadError,
                 ControlApiError,
             ) as exc:
-                self._send_html(400, app.render_index(error=str(exc)))
+                if want_json:
+                    self._send_json(400, {"error": str(exc)})
+                else:
+                    self._send_html(400, app.render_index(error=str(exc)))
                 return
 
-            self._send_html(200, app.render_index(message=message))
+            if want_json:
+                self._send_json(200, {"ok": True, "message": message})
+            else:
+                self._send_html(200, app.render_index(message=message))
 
         def _serve_events(self) -> None:
             self.send_response(200)
@@ -1533,10 +1915,11 @@ def create_web_server(
                 while True:
                     try:
                         payload_obj = app.event_payload()
-                    except (ConfigLoadError, ControlApiError) as exc:
+                    except ConfigLoadError as exc:
                         payload_obj = {
                             "mode": "error",
                             "error": str(exc),
+                            "has_admin_card": False,
                             "status": {
                                 "running": False,
                                 "current": None,

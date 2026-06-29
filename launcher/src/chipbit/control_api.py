@@ -56,6 +56,11 @@ def make_handler(service: LauncherService):
                 self._send(200, {"locked": True})
                 return
 
+            if self.path == "/unlock":
+                service.unlock()
+                self._send(200, {"unlocked": True})
+                return
+
             self._send(404, {"error": "not found"})
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003

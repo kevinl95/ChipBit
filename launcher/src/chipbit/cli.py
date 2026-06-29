@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import pwd
 import signal
 import sys
 import threading
@@ -30,6 +32,11 @@ log = logging.getLogger(__name__)
 
 def launcher_main(argv: Sequence[str] | None = None) -> int:
     """Run the ChipBit launcher daemon."""
+    # Systemd system services don't set HOME even with User=. Without it,
+    # launched apps (TuxPaint etc.) can't locate their home directories.
+    if "HOME" not in os.environ:
+        os.environ["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+
     parser = argparse.ArgumentParser(prog="chipbit-launcher")
     parser.add_argument("--catalog", type=Path, default=Path("catalog/catalog.yaml"))
     parser.add_argument("--cards", type=Path, default=Path("cards.yaml"))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pwd
 import signal
 import subprocess
 import threading
@@ -237,6 +238,13 @@ class LauncherService:
         with self._lock:
             self._unlock_deadline = None
 
+    def unlock(self) -> None:
+        """Grant a fresh unlock window without a card tap (e.g. after WiFi setup)."""
+        with self._lock:
+            self._unlock_deadline = (
+                self._monotonic() + self.settings.unlock_timeout_secs
+            )
+
     def stop_current(self) -> None:
         """Stop the current child process group, escalating if needed."""
         with self._lock:
@@ -310,6 +318,14 @@ class LauncherService:
             self.config.catalog.settings.games_root,
             self.settings,
         )
+
+        home = Path(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+        for rel in title.user_dirs:
+            try:
+                (home / rel).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                log.warning("could not create user_dir %s: %s", rel, exc)
+
         try:
             process = self._popen_factory(argv, start_new_session=True)
         except (OSError, ValueError) as exc:
@@ -346,6 +362,7 @@ class LauncherService:
             self.stop_current()
             return
         if action == "unlock":
+            self.stop_current()
             with self._lock:
                 self._unlock_deadline = (
                     self._monotonic() + self.settings.unlock_timeout_secs
@@ -385,6 +402,10 @@ class LauncherService:
         )
         self._clear_last_event_locked()
         self.config.load(force=True)
+        # The card tap is proof of physical possession — start an unlock session
+        # immediately so the setup page (shown right after enrollment) can
+        # configure WiFi without asking the admin to tap again.
+        self._unlock_deadline = self._monotonic() + self.settings.unlock_timeout_secs
         log.info("first-run admin card enrolled as %s", uid)
 
     def _last_event_locked(self) -> dict[str, str] | None:

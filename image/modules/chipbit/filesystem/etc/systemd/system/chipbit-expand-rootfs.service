@@ -1,0 +1,15 @@
+[Unit]
+Description=Expand root filesystem to fill SD card
+After=local-fs.target
+Before=chipbit-web.service chipbit-launcher.service
+ConditionPathExists=/var/lib/chipbit/.rootfs-needs-expand
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/chipbit-expand-rootfs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

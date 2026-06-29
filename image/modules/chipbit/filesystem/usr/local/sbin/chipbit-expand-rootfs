@@ -1,0 +1,37 @@
+#!/bin/bash
+
+ROOT_PART=$(findmnt -n -o SOURCE /)
+ROOT_DEV=$(lsblk -npo PKNAME "$ROOT_PART")
+PART_NUM=$(echo "$ROOT_PART" | grep -oE '[0-9]+$')
+
+echo "chipbit-expand-rootfs: ${ROOT_PART} (partition ${PART_NUM} on ${ROOT_DEV})"
+
+# Extend the partition to fill the disk.  sfdisk ", +" is the standard
+# cloud-init / Pi OS approach for live online resize — parted can refuse to
+# touch a mounted partition on some versions.
+if echo ", +" | sfdisk --no-reread -N "${PART_NUM}" "${ROOT_DEV}" 2>&1; then
+    echo "chipbit-expand-rootfs: partition table updated via sfdisk"
+else
+    echo "chipbit-expand-rootfs: sfdisk failed, falling back to parted" >&2
+    if ! parted -s "${ROOT_DEV}" resizepart "${PART_NUM}" 100% 2>&1; then
+        echo "chipbit-expand-rootfs: both resize methods failed — giving up" >&2
+        exit 1
+    fi
+    echo "chipbit-expand-rootfs: partition table updated via parted"
+fi
+
+# Tell the kernel about the new partition boundary.  partx -u is more reliable
+# than partprobe for a single in-use partition.
+partx -u "${ROOT_DEV}" 2>&1 || partprobe "${ROOT_DEV}" 2>&1 || true
+sleep 1
+
+# Grow the ext4 filesystem to fill the newly enlarged partition.
+echo "chipbit-expand-rootfs: running resize2fs"
+if ! resize2fs "${ROOT_PART}" 2>&1; then
+    echo "chipbit-expand-rootfs: resize2fs failed" >&2
+    exit 1
+fi
+
+echo "chipbit-expand-rootfs: done"
+df -h /
+rm -f /var/lib/chipbit/.rootfs-needs-expand

@@ -1,0 +1,19 @@
+[Unit]
+Description=XWayland for ChipBit (X11 compat for games that need it)
+After=chipbit-kiosk.service
+BindsTo=chipbit-kiosk.service
+
+[Service]
+Type=simple
+User=chipbit
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=HOME=/home/chipbit
+ExecStart=/usr/bin/Xwayland :0 -rootless -terminate
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=chipbit-kiosk.service
