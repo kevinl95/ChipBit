@@ -67,7 +67,7 @@ titles:
     type: exec
     bundled: true
     install: { apt: [tuxpaint, tuxpaint-stamps-default] }
-    cmd: ["tuxpaint", "--fullscreen=native", "--nosound"]
+    cmd: ["tuxpaint", "--nosound", "--savedir=/var/lib/chipbit/tuxpaint"]
     user_dirs: [".tuxpaint"]
     subject: art
     min_age: 3
@@ -113,7 +113,7 @@ titles:
     type: exec
     bundled: false
     install: { apt: [supertuxkart] }
-    cmd: ["/usr/local/bin/supertuxkart-x11", "--fullscreen"]
+    cmd: ["supertuxkart", "--fullscreen"]
     subject: racing
     min_age: 4
     blurb: "Fun kart racing with open-source characters."
@@ -121,10 +121,10 @@ titles:
 
   - id: scratch
     label: "Scratch"
-    type: exec
-    bundled: false
-    install: { apt: [scratch3] }
-    cmd: ["/usr/lib/scratch3/scratch-desktop", "--ozone-platform=wayland"]
+    type: web
+    bundled: true
+    url: "https://scratch.mit.edu/projects/editor/"
+    allowlist: ["scratch.mit.edu", "*.scratch.mit.edu", "cdn.scratch.mit.edu"]
     subject: coding
     min_age: 7
     blurb: "Drag-and-drop coding — build games, animations, and stories."

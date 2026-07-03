@@ -102,6 +102,8 @@ PAGE_CSS = dedent("""
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 1rem;
+      overflow-wrap: break-word;
+      word-break: break-all;
     }
     .eyebrow {
       margin: 0 0 0.5rem;

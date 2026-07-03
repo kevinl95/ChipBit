@@ -14,11 +14,14 @@ SupplementaryGroups=input audio video
 # Display environment so launched apps can connect to the cage Wayland session.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
-# Force SDL2 apps (TuxPaint, DOSBox, etc.) onto the Wayland backend.
-Environment=SDL_VIDEODRIVER=wayland
+# Route SDL2 apps (TuxPaint, DOSBox, ScummVM, etc.) through XWayland so cage
+# reliably surfaces their windows.  Direct SDL2-Wayland has fragile configure
+# handshake behaviour under cage — XWayland is stable and already running.
+Environment=SDL_VIDEODRIVER=x11
+Environment=DISPLAY=:0
 # PipeWire exposes a PulseAudio-compatible socket; point SDL2/PA clients at it.
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-# Force Qt apps (GCompris, KStars, etc.) onto the Wayland backend.
+# Force Qt apps (GCompris, KStars, etc.) onto the native Wayland backend.
 Environment=QT_QPA_PLATFORM=wayland
 # /usr/games is where Pi OS installs gcompris-qt, tuxpaint, etc.
 Environment=PATH=/usr/games:/usr/local/bin:/usr/bin:/bin
