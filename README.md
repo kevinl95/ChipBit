@@ -1,54 +1,49 @@
 # ChipBit
 
-**Hand a kid a card, they tap it, and parent‑approved educational software launches.** No menus to navigate, no internet rabbit holes, no escape to the desktop. When they're done, a "Home" card puts everything back. Parents curate the shelf; kids just play.
+Hand a kid a card, they tap it, the game launches. No menus, no browser, no escape to the desktop. When they're done, a Home card puts everything back.
 
-It's the cartridge ritual — pick a thing, slot it in, it runs — rebuilt for the classic edutainment that raised a generation: Reader Rabbit, the Living Books, Putt‑Putt and Freddi Fish, Math Blaster, and the Flash‑era web games that are otherwise unplayable today.
+It's the cartridge ritual rebuilt for software — pick a thing, slot it in, it runs — applied to the classic edutainment that raised a generation: Reader Rabbit, the Living Books, Putt-Putt and Freddi Fish, Math Blaster, and the Flash-era web games that are otherwise unplayable today.
 
 ---
 
 ## How it works
 
-1. **Flash** the image to an SD card and boot the Pi.
-2. **Set up** on first boot: connect Wi‑Fi, drop your game data into the games folder (network share or a USB stick).
-3. **Register cards** in the web UI (unlocked by tapping a parent card): pick a title from the auto‑detected list, tap a blank card to bind it — or import a manifest card pack.
-4. **Print & laminate** the matching card art (optional).
-5. **Hand the cards to the kid.** Tap a card → it launches fullscreen. Tap **Home** → back to the idle screen.
+1. Flash the image to an SD card and boot the Pi.
+2. On first boot, connect Wi-Fi and point it at your game data (network share or USB stick).
+3. Tap a parent card to unlock, pick a title from the catalog, tap a blank card to bind it.
+4. Print and laminate the matching card art (optional but satisfying).
+5. Hand the cards to the kid.
 
-Behind the cards, a small daemon reads the RFID reader, looks the UID up in a config file, and launches the right engine — ScummVM, DOSBox, a native Linux app, a locked‑down browser, or Ruffle for Flash titles.
+Behind the scenes: a daemon reads the RFID reader, looks up the card UID, and launches the right engine — ScummVM, DOSBox, Ruffle, a native app, or a locked-down browser. The parent web UI runs on the Pi itself; no cloud account needed.
 
 ---
 
-## What's bundled vs. what you bring
+## What's included
 
-**Bundled (all open source / freely distributable):**
-- Raspberry Pi OS image with the kiosk launcher + card‑registration UI
-- **ScummVM** (Living Books, Humongous Entertainment, point‑and‑click classics)
-- **DOSBox** (DOS‑era edutainment)
-- **Ruffle** (resurrects dead Flash‑era educational web games)
-- Native Linux educational software: **GCompris**, **Tux Paint**, **TuxMath/TuxTyping**, **KDE Edu** (Marble, KStars, KTurtle…), **Scratch**
+**Bundled in the image:**
+- Raspberry Pi OS (Bookworm, 32-bit) with the ChipBit kiosk and parent UI
+- **ScummVM**, **DOSBox Staging**, **Ruffle** — bring your own game data
+- **GCompris** and **Tux Paint** — ready to use out of the box
+- **Scratch** and **PBS Kids** — web titles with allowlisted domains
 
-**You bring** the game data you legally own — purchased re‑releases (e.g. GOG), freeware/shareware, or rips of your own original discs. ChipBit ships the *engines*, never the copyrighted content; the two stay cleanly separated, the same way ScummVM and DOSBox have always worked.
+**Installed on first card enroll:**
+- Marble, KStars, SuperTux, SuperTuxKart (downloaded from the Pi OS repos on demand)
+
+**You bring:**
+Game data you legally own — purchased re-releases (GOG), freeware/shareware, or rips of your own discs. ChipBit ships the engines, not the content. Same deal as ScummVM and DOSBox have always had.
 
 ---
 
 ## Hardware
 
-- **Raspberry Pi 400 or 500** (recommended): the all‑in‑one keyboard form factor is the most kid‑proof — nothing loose to unplug. The 400 is cheap and plentiful secondhand; the 500 keeps it on current silicon. The same image also boots a Pi 4 or 5.
-- **USB HID RFID reader**, 13.56 MHz MIFARE — driver‑free, "types" the card UID like a keyboard. (Advertise the *spec*, not a single link; those listings rotate.)
-- **MIFARE Classic 1K cards + NFC stickers** — each ships with a unique factory UID, so no card‑writing is needed; the stickers tuck inside printed card art.
-
----
-
-## Principles
-
-- **Local‑first.** No account, no cloud, no subscription. Everything lives on the Pi, owned by the parent. (Contrast the Toniebox‑style walled gardens — same physical‑token magic, none of the lock‑in.)
-- **Privacy‑respecting.** No telemetry. Web cards run through a local DNS/proxy safety layer.
-- **Legally grounded.** Open engines + the data you own. A preservation tool, not a piracy box.
-- **Open & forkable.** Built with CustomPiOS/pi‑gen; build scripts public so makers can extend it.
-- **Safe by default.** A locked kiosk a child can use unattended, gated config a child can't reach.
+- **Raspberry Pi 400 or 500** (recommended) — the keyboard form factor means nothing loose to unplug or knock over. A Pi 4 or newer works too.
+- **USB HID RFID reader**, 13.56 MHz MIFARE — shows up as a keyboard, no driver needed.
+- **MIFARE Classic 1K cards or NFC stickers** — each has a unique factory UID so you don't need to write anything to the card; the UID is the key.
 
 ---
 
 ## Status
 
-Concept / in development. Core launcher daemon and card schema designed; image build, registration UI, and manifest packs in progress.
+Beta. The image builds, boots, and the core loop (tap card → launch → tap Home → stop) works. Card enrollment through the parent UI works. The title catalog is small but the infrastructure to extend it is solid — adding a new title is a few lines in `catalog.yaml`.
+
+Rough spots: user-supplied content (ScummVM games, DOSBox titles, Flash SWFs) requires manual file placement rather than a guided wizard. That's the next thing.
