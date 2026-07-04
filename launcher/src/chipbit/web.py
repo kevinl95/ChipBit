@@ -304,14 +304,16 @@ PARENT_EVENTS_SCRIPT = dedent("""
       const state = JSON.parse(event.data);
       if (badge) badge.textContent = state.mode;
       if (tapBanner) {
-        tapBanner.style.display = (state.status && state.status.capture_mode) ? '' : 'none';
+        tapBanner.style.display =
+          (state.status && state.status.capture_mode) ? '' : 'none';
       }
       if (state.operation) {
         showOverlay(
           state.operation.title || 'Working…',
           state.operation.message || ''
         );
-        document.querySelectorAll('.enroll-form button[disabled]').forEach(function(btn) {
+        document.querySelectorAll('.enroll-form button[disabled]')
+          .forEach(function(btn) {
           btn.textContent = state.operation.message || 'Working…';
         });
       } else if (!enrollInProgress && !overlayPinned) {
@@ -586,7 +588,8 @@ WIFI_SCAN_SCRIPT = dedent("""
         });
         var other = document.createElement('option');
         other.value = '__other__';
-        other.textContent = ssids.length ? 'Other…' : 'No networks found — enter manually';
+        other.textContent = ssids.length
+          ? 'Other…' : 'No networks found — enter manually';
         sel.appendChild(other);
         if (ssids.length === 0) {
           sel.value = '__other__';
@@ -972,7 +975,10 @@ class WebApp:
             msg = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise RuntimeError(f"keyboard layout change failed: {msg}")
         self.control.lock()
-        return f"Keyboard layout set to {layout} — takes effect after the screen restarts"
+        return (
+            f"Keyboard layout set to {layout}"
+            " — takes effect after the screen restarts"
+        )
 
     def lock_controls(self) -> str:
         self.control.lock()
@@ -1046,7 +1052,8 @@ class WebApp:
                     in Settings.
                   </p>
                   <p id="wifi-connect-error" class="flash error" hidden></p>
-                  <form id="wifi-form" method="post" action="/setup/wifi" class="wifi-form">
+                  <form id="wifi-form" method="post"
+                    action="/setup/wifi" class="wifi-form">
                     <label>Network
                       <select id="ssid-select" name="ssid" required>
                         <option value="" disabled selected>Scanning…</option>
@@ -1124,8 +1131,14 @@ class WebApp:
 
     def wifi_enable(self) -> str:
         """Unblock the radio and tell NetworkManager to turn WiFi on."""
-        self.runner(["sudo", "rfkill", "unblock", "wifi"], check=False, capture_output=True, text=True)
-        result = self.runner(["sudo", "nmcli", "radio", "wifi", "on"], check=False, capture_output=True, text=True)
+        self.runner(
+            ["sudo", "rfkill", "unblock", "wifi"],
+            check=False, capture_output=True, text=True,
+        )
+        result = self.runner(
+            ["sudo", "nmcli", "radio", "wifi", "on"],
+            check=False, capture_output=True, text=True,
+        )
         if result.returncode != 0:
             err = (result.stderr + result.stdout).strip()
             raise RuntimeError(f"nmcli radio wifi on failed: {err}")
@@ -1317,11 +1330,17 @@ class WebApp:
             <div id="tap-now-banner" class="flash ok" style="display:none">
               Hold your card to the reader now — waiting up to 30 seconds.
             </div>
+            <script>
+              function exitAdmin() {{
+                fetch('/settings/lock', {{method: 'POST'}})
+                  .then(() => location.replace('/kiosk'));
+              }}
+            </script>
             <section class="panel">
               <p class="eyebrow">Parent Console</p>
               <h1>Game cards</h1>
               <p class="muted">Admin card UID: <code>{admin_uid}</code></p>
-              <button type="button" onclick="fetch('/settings/lock',{{method:'POST'}}).then(()=>location.replace('/kiosk'))">&#8592; Back to play mode</button>
+              <button type="button" onclick="exitAdmin()">← Back to play mode</button>
             </section>
             <section class="catalog-grid">{title_rows}</section>
             <section class="panel panel-wide">
@@ -1341,15 +1360,21 @@ class WebApp:
             <section class="panel panel-wide">
               <h2>Add a custom card</h2>
               <p class="muted">
-                Create cards for software you own or websites you'd like your child to visit.
-                After saving, use "Tap card to enroll" in the grid above to assign an RFID card.
+                Create cards for software you own or websites you'd
+                like your child to visit.
+                After saving, use "Tap card to enroll" in the grid
+                above to assign an RFID card.
               </p>
               <details>
                 <summary>Add a website</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="web" />
-                  <label>Name <input type="text" name="label" placeholder="My Website" required /></label>
-                  <label>URL <input type="url" name="url" placeholder="https://example.com" required /></label>
+                  <label>Name
+                    <input type="text" name="label"
+                      placeholder="My Website" required /></label>
+                  <label>URL
+                    <input type="url" name="url"
+                      placeholder="https://example.com" required /></label>
                   <button type="submit">Save website card</button>
                 </form>
               </details>
@@ -1357,9 +1382,15 @@ class WebApp:
                 <summary>Add an installed app</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="exec" />
-                  <label>Name <input type="text" name="label" placeholder="My App" required /></label>
-                  <label>Launch command <input type="text" name="cmd" placeholder="myapp --fullscreen" required /></label>
-                  <label>Apt package to install (optional) <input type="text" name="apt" placeholder="my-package" /></label>
+                  <label>Name
+                    <input type="text" name="label"
+                      placeholder="My App" required /></label>
+                  <label>Launch command
+                    <input type="text" name="cmd"
+                      placeholder="myapp --fullscreen" required /></label>
+                  <label>Apt package to install (optional)
+                    <input type="text" name="apt"
+                      placeholder="my-package" /></label>
                   <button type="submit">Save app card</button>
                 </form>
               </details>
@@ -1367,7 +1398,9 @@ class WebApp:
                 <summary>Add a ScummVM game (you supply game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="scummvm" />
-                  <label>Name <input type="text" name="label" placeholder="Monkey Island" required /></label>
+                  <label>Name
+                    <input type="text" name="label"
+                      placeholder="Monkey Island" required /></label>
                   <label>
                     ScummVM game ID
                     <input type="text" name="game_id" placeholder="monkey" required />
@@ -1383,10 +1416,13 @@ class WebApp:
                 <summary>Add a DOSBox game (you supply game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="dosbox" />
-                  <label>Name <input type="text" name="label" placeholder="My DOS Game" required /></label>
+                  <label>Name
+                    <input type="text" name="label"
+                      placeholder="My DOS Game" required /></label>
                   <label>
                     DOSBox config file path under /games/
-                    <input type="text" name="conf" placeholder="mygame/dosbox.conf" required />
+                    <input type="text" name="conf"
+                      placeholder="mygame/dosbox.conf" required />
                   </label>
                   <button type="submit">Save DOSBox card</button>
                 </form>
@@ -1572,7 +1608,10 @@ class WebApp:
         last_event = status.get("last_event")
         if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
             uid = last_event.get("uid", "")
-            body = f"Card {uid} is not set up yet. Enroll it in the parent console." if uid else "That card is not set up yet."
+            body = (
+                f"Card {uid} is not set up yet. Enroll it in the parent console."
+                if uid else "That card is not set up yet."
+            )
             return {
                 "kind": "unknown-card",
                 "title": "Ask a grown-up",

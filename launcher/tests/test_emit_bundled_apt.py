@@ -1,17 +1,16 @@
 """Tests for image/build_helpers/emit_bundled_apt.py."""
 from __future__ import annotations
 
-import textwrap
+import importlib.util
 from pathlib import Path
 
-import pytest
 import yaml
 
 # Import the helper directly from the image directory (not installed).
-import importlib.util
-import sys
-
-_HELPER = Path(__file__).parent.parent.parent / "image" / "build_helpers" / "emit_bundled_apt.py"
+_HELPER = (
+    Path(__file__).parent.parent.parent
+    / "image" / "build_helpers" / "emit_bundled_apt.py"
+)
 _spec = importlib.util.spec_from_file_location("emit_bundled_apt", _HELPER)
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
@@ -19,7 +18,11 @@ emit_bundled_apt = _mod.emit_bundled_apt
 
 
 def _write_catalog(tmp_path: Path, titles: list[dict]) -> Path:
-    data = {"meta": {"catalog_version": 1}, "settings": {"games_root": "/games"}, "titles": titles}
+    data = {
+        "meta": {"catalog_version": 1},
+        "settings": {"games_root": "/games"},
+        "titles": titles,
+    }
     p = tmp_path / "catalog.yaml"
     p.write_text(yaml.safe_dump(data), encoding="utf-8")
     return p

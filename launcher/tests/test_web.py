@@ -551,7 +551,10 @@ def test_create_custom_exec_title_with_apt_package(tmp_path: Path) -> None:
         ) as web_url:
             http_post(
                 f"{web_url}/titles/custom",
-                {"type": "exec", "label": "Cool App", "cmd": "coolapp --fs", "apt": "coolapp"},
+                {
+                    "type": "exec", "label": "Cool App",
+                    "cmd": "coolapp --fs", "apt": "coolapp",
+                },
             )
 
     import yaml

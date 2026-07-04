@@ -118,7 +118,9 @@ def test_find_rfid_reader_skips_non_usb_device_and_returns_none() -> None:
     _BUS_I8042 = 0x11
     result = find_rfid_reader(
         list_devices=lambda: ["/dev/input/event0"],
-        input_device_factory=lambda path: _make_device(_rfid_caps(), bustype=_BUS_I8042),
+        input_device_factory=lambda path: _make_device(
+            _rfid_caps(), bustype=_BUS_I8042
+        ),
     )
     assert result is None
 

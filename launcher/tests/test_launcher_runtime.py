@@ -263,7 +263,9 @@ def test_capturing_admin_card_during_enrollment_refreshes_unlock(
 
     assert captured == ["123456"], "admin card UID was not captured"
     # The deadline should have been pushed forward; unlock must still be active.
-    assert service.status()["unlocked"] is True, "unlock expired after capture of admin card"
+    assert service.status()["unlocked"] is True, (
+        "unlock expired after capture of admin card"
+    )
 
 
 def test_unknown_card_sets_transient_status_event(tmp_path: Path) -> None:
