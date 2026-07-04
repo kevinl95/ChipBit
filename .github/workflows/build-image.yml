@@ -1,0 +1,100 @@
+name: build-image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # GitHub's ubuntu-latest runners have ~14 GB free.  A CustomPiOS ARM
+      # build needs ~8–10 GB (base image + 3 GB enlarge + output + apt cache).
+      # This action clears Android SDK, .NET, Haskell, and large apt packages
+      # to free ~20 GB before the build starts.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      # Register ARM binfmt handlers so the chroot can execute armhf binaries.
+      - name: Set up QEMU binfmt
+        uses: docker/setup-qemu-action@v3
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
+            binfmt-support \
+            qemu-user-static \
+            zip \
+            unzip \
+            mtools \
+            parted \
+            fdisk \
+            xz-utils
+
+      - name: Clone CustomPiOS
+        run: |
+          git clone --depth 1 https://github.com/guysoft/CustomPiOS.git /opt/CustomPiOS
+          echo "/opt/CustomPiOS/src" > image/custompios_path
+
+      # Cache the ~900 MB base image by its pinned date so subsequent runs
+      # don't re-download it.  Update the cache key when upgrading the base.
+      - name: Cache Pi OS base image
+        id: cache-base
+        uses: actions/cache@v4
+        with:
+          path: /tmp/raspios-base.img.xz
+          key: raspios-bookworm-armhf-2026-04-13
+
+      - name: Download Pi OS base image
+        if: steps.cache-base.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o /tmp/raspios-base.img.xz \
+            "https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2026-04-13/2026-04-13-raspios-bookworm-armhf-lite.img.xz"
+
+      - name: Write CI build config
+        run: |
+          printf 'export BASE_ZIP_IMG="/tmp/raspios-base.img.xz"\n' > image/config.local
+
+      - name: Build ChipBit image
+        run: sudo -E bash image/build_dist
+
+      # build_dist runs as root so workspace/ is root-owned.  Hand it back so
+      # subsequent steps can read the .img and write the compressed output.
+      - name: Fix workspace ownership
+        run: sudo chown -R "$(id -un)" image/workspace
+
+      # CustomPiOS leaves a raw .img in workspace/ — no built-in compression.
+      # xz it to ~900 MB before uploading and give it a meaningful name.
+      - name: Package image
+        id: img
+        run: |
+          raw=$(find image/workspace -maxdepth 1 -name "*.img" ! -name "*.img.xz" | head -1)
+          version=$(bash -c "source image/config && echo \$DIST_VERSION")
+          out="image/workspace/chipbit-${version}-armhf.img.xz"
+          xz -T0 -c "$raw" > "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipbit-image-${{ github.sha }}
+          path: ${{ steps.img.outputs.path }}
+          retention-days: 30
