@@ -38,7 +38,8 @@ class FakeRunner:
 
         expected = self._expected_calls.pop(0)
         assert argv == expected.argv
-        assert kwargs == {"check": False, "capture_output": True, "text": True}
+        base_kwargs = {k: v for k, v in kwargs.items() if k != "timeout"}
+        assert base_kwargs == {"check": False, "capture_output": True, "text": True}
         return subprocess.CompletedProcess(
             argv,
             expected.returncode,
@@ -97,7 +98,17 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
                 ["dpkg-query", "--show", "--showformat=${Status}", "demo-app"],
                 returncode=1,
             ),
-            ExpectedCall(["apt-get", "install", "-y", "demo-app"]),
+            ExpectedCall(
+                ["sudo", "apt-get", "update", "-qq", "-o", "DPkg::Lock::Timeout=60"],
+            ),
+            ExpectedCall(
+                [
+                    "sudo", "apt-get", "install", "-y",
+                    "--no-install-recommends",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    "demo-app",
+                ]
+            ),
             ExpectedCall(
                 ["dpkg-query", "--show", "--showformat=${Status}", "demo-app"],
                 stdout="install ok installed",
@@ -118,6 +129,7 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
         "checking",
         "network-check",
         "installing",
+        "installing",  # update package lists
         "verifying",
         "installed",
     ]
@@ -175,7 +187,15 @@ def test_enroll_card_does_not_bind_when_install_fails(tmp_path: Path) -> None:
                 returncode=1,
             ),
             ExpectedCall(
-                ["apt-get", "install", "-y", "demo-app"],
+                ["sudo", "apt-get", "update", "-qq", "-o", "DPkg::Lock::Timeout=60"],
+            ),
+            ExpectedCall(
+                [
+                    "sudo", "apt-get", "install", "-y",
+                    "--no-install-recommends",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    "demo-app",
+                ],
                 returncode=1,
                 stderr="package failure",
             ),
