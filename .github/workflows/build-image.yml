@@ -63,13 +63,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/raspios-base.img.xz
-          key: raspios-bookworm-armhf-20260413
+          key: raspios-bookworm-armhf-20260618
 
       - name: Download Pi OS base image
         if: steps.cache-base.outputs.cache-hit != 'true'
         run: |
           curl -fL -o /tmp/raspios-base.img.xz \
-            "https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2026-04-13/2026-04-13-raspios-bookworm-armhf-lite.img.xz"
+            "https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf/images/raspios_oldstable_lite_armhf-2026-06-19/2026-06-18-raspios-bookworm-armhf-lite.img.xz"
 
       - name: Write CI build config
         run: |
