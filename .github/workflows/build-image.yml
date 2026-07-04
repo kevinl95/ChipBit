@@ -54,20 +54,21 @@ jobs:
           git clone --depth 1 https://github.com/guysoft/CustomPiOS.git /opt/CustomPiOS
           echo "/opt/CustomPiOS/src" > image/custompios_path
 
-      # Cache the ~900 MB base image by its pinned date so subsequent runs
-      # don't re-download it.  Update the cache key when upgrading the base.
+      # Cache the base image.  raspios_lite_armhf_latest follows a redirect to
+      # whatever Raspberry Pi currently ships; bump RASPIOS_CACHE_KEY below
+      # whenever you want CI to pick up a fresh Pi OS release.
       - name: Cache Pi OS base image
         id: cache-base
         uses: actions/cache@v4
         with:
           path: /tmp/raspios-base.img.xz
-          key: raspios-bookworm-armhf-2026-04-13
+          key: raspios-bookworm-armhf-v1
 
       - name: Download Pi OS base image
         if: steps.cache-base.outputs.cache-hit != 'true'
         run: |
           curl -fL -o /tmp/raspios-base.img.xz \
-            "https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2026-04-13/2026-04-13-raspios-bookworm-armhf-lite.img.xz"
+            "https://downloads.raspberrypi.com/raspios_lite_armhf_latest"
 
       - name: Write CI build config
         run: |
