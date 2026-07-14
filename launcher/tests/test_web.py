@@ -587,7 +587,7 @@ def test_create_custom_scummvm_title(tmp_path: Path) -> None:
     entry = raw["titles"][0]
     assert entry["type"] == "scummvm"
     assert entry["game_id"] == "monkey"
-    assert entry["data"] == "required"
+    assert "data" not in entry  # user-created ScummVM titles don't need data="required"
 
 
 def test_create_custom_title_missing_label_returns_400(tmp_path: Path) -> None:
@@ -638,7 +638,8 @@ class DetectRunner:
 
     def __call__(self, argv: list[str], **kwargs):
         self.calls.append(list(argv))
-        assert kwargs == {"check": False, "capture_output": True, "text": True}
+        required = {"check": False, "capture_output": True, "text": True}
+        assert {k: v for k, v in kwargs.items() if k != "timeout"} == required
         return subprocess.CompletedProcess(
             argv,
             0,

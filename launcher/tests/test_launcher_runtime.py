@@ -341,7 +341,16 @@ def test_first_scan_auto_enrolls_admin_card_when_no_admin_exists(
                 data="required",
                 swf="flash/mathblaster.swf",
             ),
-            ["ruffle", "--fullscreen", "/games/flash/mathblaster.swf"],
+            [
+                "chromium",
+                "--ozone-platform=wayland",
+                "--kiosk",
+                "--noerrdialogs",
+                "--no-first-run",
+                "--disable-features=TranslateUI",
+                "--user-data-dir=/tmp/chipbit-ruffle",
+                "--app=http://127.0.0.1:8080/ruffle/player.html?swf=/swf/flash/mathblaster.swf",
+            ],
         ),
         (
             CatalogTitle(

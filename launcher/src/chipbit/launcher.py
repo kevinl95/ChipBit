@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from .models import (
     CardsConfig,
@@ -456,7 +457,24 @@ def build_launch_argv(
         content_path = resolve_title_content_path(title, games_root)
         if content_path is None:
             raise ValueError("ruffle title is missing a resolved content path")
-        return [settings.ruffle_bin, "--fullscreen", str(content_path)]
+        try:
+            swf_rel = Path(content_path).relative_to(games_root)
+        except ValueError:
+            swf_rel = Path(content_path).name
+        player_url = (
+            "http://127.0.0.1:8080/ruffle/player.html"
+            f"?swf=/swf/{quote(str(swf_rel), safe='/')}"
+        )
+        return [
+            settings.chromium_bin,
+            "--ozone-platform=wayland",
+            "--kiosk",
+            "--noerrdialogs",
+            "--no-first-run",
+            "--disable-features=TranslateUI",
+            "--user-data-dir=/tmp/chipbit-ruffle",
+            f"--app={player_url}",
+        ]
     return [
         settings.chromium_bin,
         "--ozone-platform=wayland",

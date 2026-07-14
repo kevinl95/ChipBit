@@ -29,7 +29,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # Register ARM binfmt handlers so the chroot can execute armhf binaries.
+      # Register ARM binfmt handlers so the chroot can execute arm64 binaries.
       - name: Set up QEMU binfmt
         uses: docker/setup-qemu-action@v3
 
@@ -56,24 +56,24 @@ jobs:
           echo "/opt/CustomPiOS/src" > image/custompios_path
 
       # Cache the base image.  Use a pinned dated URL so CI always builds on the
-      # same Pi OS release regardless of what raspios_lite_armhf_latest points
+      # same Pi OS release regardless of what raspios_lite_arm64_latest points
       # to.  Bump key and URL together when upgrading to a new Pi OS version.
       - name: Cache Pi OS base image
         id: cache-base
         uses: actions/cache@v4
         with:
           path: /tmp/raspios-base.img.xz
-          key: raspios-bookworm-armhf-20260618
+          key: raspios-bookworm-arm64-20260618
 
       - name: Download Pi OS base image
         if: steps.cache-base.outputs.cache-hit != 'true'
         run: |
           curl -fL -o /tmp/raspios-base.img.xz \
-            "https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf/images/raspios_oldstable_lite_armhf-2026-06-19/2026-06-18-raspios-bookworm-armhf-lite.img.xz"
+            "https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2026-06-19/2026-06-18-raspios-bookworm-arm64-lite.img.xz"
 
       - name: Write CI build config
         run: |
-          printf 'export BASE_ZIP_IMG="/tmp/raspios-base.img.xz"\n' > image/config.local
+          printf 'export BASE_ZIP_IMG="/tmp/raspios-base.img.xz"\nexport BASE_ARCH=arm64\n' > image/config.local
 
       - name: Build ChipBit image
         run: sudo -E bash image/build_dist
@@ -90,7 +90,7 @@ jobs:
         run: |
           raw=$(find image/workspace -maxdepth 1 -name "*.img" ! -name "*.img.xz" | head -1)
           version=$(bash -c "source image/config && echo \$DIST_VERSION")
-          out="image/workspace/chipbit-${version}-armhf.img.xz"
+          out="image/workspace/chipbit-${version}-arm64.img.xz"
           xz -T0 -c "$raw" > "$out"
           echo "path=$out" >> "$GITHUB_OUTPUT"
 

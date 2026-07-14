@@ -5,9 +5,10 @@ export DIST_VERSION="0.1.0"
 # image, configures QEMU, and runs child modules inside the chroot.
 export MODULES="base(chipbit)"
 
-# Architecture: arm64 for Pi 4/400/5/500; armv7l (armhf) for Pi 3/older.
-# Set in config.local to override for a specific target board.
-[ -n "$BASE_ARCH" ] || BASE_ARCH=arm64
+# BASE_ARCH=arm64 is set in config.local (highest-priority override) rather
+# than here. Setting BASE_BOARD=raspberrypiarm64 in this file would cause
+# modules/base/config to unconditionally blank BASE_ZIP_IMG via a directory
+# glob, so we leave BASE_BOARD at its default and let config.local own arch.
 
 # Extra space added to the root partition before the chroot runs.
 # Needs to cover: cage, scummvm, chromium, dosbox, GCompris, Tuxpaint,

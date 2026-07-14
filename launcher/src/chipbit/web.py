@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -42,6 +45,107 @@ from .models import (
 log = logging.getLogger(__name__)
 
 DEFAULT_EVENT_POLL_SECS = 1.0
+_MEDIA_ROOT = Path("/media")
+_WIFI_COUNTRY_FILE = Path("/var/lib/chipbit/wifi_country")
+# Written when the user completes (or skips) WiFi setup for the first time.
+# /kiosk redirects to /setup while this file is absent and country is set.
+_WIFI_SETUP_FILE = Path("/var/lib/chipbit/wifi_setup_done")
+
+# Curated list of (ISO-3166 alpha-2, display name) sorted by display name.
+_WIFI_COUNTRIES: list[tuple[str, str]] = [
+    ("AT", "Austria"),
+    ("AU", "Australia"),
+    ("BE", "Belgium"),
+    ("BR", "Brazil"),
+    ("CA", "Canada"),
+    ("CZ", "Czech Republic"),
+    ("DK", "Denmark"),
+    ("FI", "Finland"),
+    ("FR", "France"),
+    ("DE", "Germany"),
+    ("GR", "Greece"),
+    ("HU", "Hungary"),
+    ("IN", "India"),
+    ("IE", "Ireland"),
+    ("IT", "Italy"),
+    ("JP", "Japan"),
+    ("MX", "Mexico"),
+    ("NL", "Netherlands"),
+    ("NZ", "New Zealand"),
+    ("NO", "Norway"),
+    ("PL", "Poland"),
+    ("PT", "Portugal"),
+    ("RO", "Romania"),
+    ("SG", "Singapore"),
+    ("SK", "Slovakia"),
+    ("ZA", "South Africa"),
+    ("ES", "Spain"),
+    ("SE", "Sweden"),
+    ("CH", "Switzerland"),
+    ("GB", "United Kingdom"),
+    ("US", "United States"),
+]
+_VALID_COUNTRY_CODES: frozenset[str] = frozenset(c for c, _ in _WIFI_COUNTRIES)
+
+
+def _reboot_after_delay(runner: CommandRunner, delay: float = 2.0) -> None:
+    time.sleep(delay)
+    try:
+        runner(["sudo", "systemctl", "reboot"], check=False, capture_output=True)
+    except Exception:
+        pass
+
+
+def _unescape_mount_path(s: str) -> str:
+    """Decode octal escapes in a /proc/mounts field (e.g. \\040 → space)."""
+    return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+
+_DOS_SKIP_EXES: frozenset[str] = frozenset({
+    "install.exe", "setup.exe", "setup.com", "uninst.exe", "unins000.exe",
+    "dos4gw.exe", "dos32a.exe", "cwsdpmi.exe", "dpmi16bi.ovl",
+    "install.bat", "setup.bat", "autorun.bat", "autoexec.bat",
+})
+
+
+def _find_dos_executable(game_dir: Path) -> str | None:
+    """Return the most likely game-launch filename in a DOS game directory."""
+    candidates: list[str] = []
+    try:
+        for f in game_dir.iterdir():
+            if not f.is_file():
+                continue
+            if f.suffix.lower() in (".exe", ".com", ".bat") and f.name.lower() not in _DOS_SKIP_EXES:
+                candidates.append(f.name.upper())
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda n: (n.endswith(".BAT"), n))
+    return candidates[0]
+
+
+def _copytree_permissive(src: Path, dst: Path) -> None:
+    """Copy a directory tree without preserving source permissions.
+
+    shutil.copytree copies directory permission bits verbatim via copystat.
+    Optical discs (ISO 9660/UDF) have directories with mode 0o555, which
+    copytree applies to the destination mid-copy, causing EACCES on the next
+    write into that directory.  This variant always creates directories 0o755
+    and files 0o644 regardless of source permissions.
+    """
+    dst.mkdir(mode=0o755, exist_ok=True)
+    for item in src.iterdir():
+        dst_item = dst / item.name
+        if item.is_symlink():
+            continue
+        if item.is_dir():
+            _copytree_permissive(item, dst_item)
+        elif item.is_file():
+            shutil.copy2(str(item), str(dst_item))
+            dst_item.chmod(0o644)
+    dst.chmod(0o755)
+
 
 # Served for any /art/<name> that doesn't exist on disk — generic app placeholder.
 _DEFAULT_ART_SVG: bytes = (
@@ -271,6 +375,25 @@ PAGE_CSS = dedent("""
       margin: 0;
       flex-shrink: 0;
     }
+    .op-overlay.error .spinner { display: none; }
+    .op-overlay-dismiss {
+      margin-left: auto;
+      background: none;
+      border: none;
+      font-size: 1.25rem;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 0 .25rem;
+    }
+    .link-button {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: inherit;
+      color: var(--muted);
+      cursor: pointer;
+      text-decoration: underline;
+    }
     .op-overlay-text strong {
       display: block;
     }
@@ -284,19 +407,32 @@ PARENT_EVENTS_SCRIPT = dedent("""
     var overlay = document.getElementById('op-overlay');
     var overlayTitle = document.getElementById('op-overlay-title');
     var overlayMsg = document.getElementById('op-overlay-msg');
+    var overlayDismiss = document.getElementById('op-overlay-dismiss');
     var badge = document.getElementById('live-mode');
     var tapBanner = document.getElementById('tap-now-banner');
 
     var enrollInProgress = false;
     var overlayPinned = false;  // true while an error is displayed; SSE won't clear it
 
-    function showOverlay(title, msg) {
+    function showOverlay(title, msg, isError) {
       if (overlayTitle) overlayTitle.textContent = title;
       if (overlayMsg) overlayMsg.textContent = msg;
-      if (overlay) overlay.hidden = false;
+      if (overlay) {
+        overlay.hidden = false;
+        overlay.classList.toggle('error', !!isError);
+      }
+      if (overlayDismiss) overlayDismiss.hidden = !isError;
     }
     function hideOverlay() {
-      if (overlay) overlay.hidden = true;
+      if (overlay) { overlay.hidden = true; overlay.classList.remove('error'); }
+      if (overlayDismiss) overlayDismiss.hidden = true;
+    }
+
+    if (overlayDismiss) {
+      overlayDismiss.addEventListener('click', function() {
+        overlayPinned = false;
+        hideOverlay();
+      });
     }
 
     const events = new EventSource('/events');
@@ -344,7 +480,7 @@ PARENT_EVENTS_SCRIPT = dedent("""
               window.location.replace('/');
             } else {
               overlayPinned = true;
-              showOverlay('Enrollment failed', data.error || 'Something went wrong.');
+              showOverlay('Enrollment failed', data.error || 'Something went wrong.', true);
               if (btn) {
                 btn.disabled = false;
                 btn.textContent = 'Try again';
@@ -384,7 +520,7 @@ LOCKED_EVENTS_SCRIPT = dedent("""
         if (detail) detail.textContent = state.operation ? state.operation.message : '';
         if (state.mode === 'unlocked') {
             events.close();
-            window.location.replace('/');
+            window.location.reload();
         }
     };
     """).strip()
@@ -627,8 +763,8 @@ WIFI_CONNECT_SCRIPT = dedent("""
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (data.ok) {
-              connectMsg.textContent = 'Connected! Taking you to the admin page…';
-              setTimeout(function () { window.location.replace('/'); }, 1200);
+              connectMsg.textContent = 'Connected!';
+              setTimeout(function () { window.location.replace('/'); }, 2500);
             } else {
               connectingBox.hidden = true;
               form.hidden = false;
@@ -749,6 +885,16 @@ class WebApp:
     )
     _operation: dict[str, str] | None = field(
         default=None,
+        init=False,
+        repr=False,
+    )
+    _copy_jobs: dict = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _copy_jobs_lock: threading.Lock = field(
+        default_factory=threading.Lock,
         init=False,
         repr=False,
     )
@@ -984,10 +1130,17 @@ class WebApp:
         self.control.lock()
         return "Parent controls locked"
 
-    def configure_wifi(self, ssid: str, password: str | None) -> str:
-        cards = load_cards(self.cards_path)
-        self._require_unlocked(cards)
+    def shutdown_system(self) -> str:
+        threading.Thread(
+            target=lambda: self.runner(
+                ["sudo", "shutdown", "-h", "now"],
+                check=False, capture_output=True, text=True,
+            ),
+            daemon=True,
+        ).start()
+        return "Shutting down — you can safely unplug the Pi in a moment"
 
+    def configure_wifi(self, ssid: str, password: str | None) -> str:
         normalized_ssid = ssid.strip()
         if not normalized_ssid:
             raise ValueError("ssid is required")
@@ -999,7 +1152,6 @@ class WebApp:
         if result.returncode != 0:
             message = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise RuntimeError(f"Wi-Fi setup failed: {message}")
-        self.control.lock()
         return f"Connected Wi-Fi to {normalized_ssid}"
 
     def scan_wifi(self) -> list[str]:
@@ -1024,6 +1176,96 @@ class WebApp:
                 seen.add(ssid)
                 ssids.append(ssid)
         return ssids
+
+    def render_country_picker(self, *, error: str = "") -> str:
+        """First-run country selection page — shown before WiFi setup."""
+        flash = self._flash("", error)
+        options = "\n".join(
+            f'<option value="{c}">{escape(name)}</option>'
+            for c, name in _WIFI_COUNTRIES
+        )
+        return dedent(f"""
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>ChipBit Setup</title>
+              <style>{PAGE_CSS}</style>
+            </head>
+            <body>
+              <main>
+                <header class="site-header">
+                  <h1 class="site-title">ChipBit Setup</h1>
+                </header>
+                {flash}
+                <section class="panel panel-wide">
+                  <h2>Wi-Fi Country</h2>
+                  <p>
+                    Choose the country where this ChipBit is being used.
+                    This sets the Wi-Fi radio channels available on your network.
+                    The device will reboot once to apply the setting.
+                  </p>
+                  <form method="post" action="/setup/country">
+                    <label>Country
+                      <select name="country" required>
+                        <option value="" disabled selected>Select a country…</option>
+                        {options}
+                      </select>
+                    </label>
+                    <button type="submit">Set country and reboot</button>
+                  </form>
+                </section>
+              </main>
+            </body>
+            </html>
+        """).strip()
+
+    def render_rebooting(self) -> str:
+        """Shown immediately after country selection while the device reboots."""
+        return dedent("""
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <meta http-equiv="refresh" content="20;url=/setup">
+              <title>ChipBit — Rebooting</title>
+              <style>__PAGE_CSS__</style>
+            </head>
+            <body>
+              <main>
+                <header class="site-header">
+                  <h1 class="site-title">ChipBit Setup</h1>
+                </header>
+                <section class="panel panel-wide">
+                  <h2>Rebooting…</h2>
+                  <p>Applying Wi-Fi country settings and rebooting.
+                     This page will reload automatically in about 20 seconds.</p>
+                  <div class="connecting-box">
+                    <div class="spinner"></div>
+                  </div>
+                </section>
+              </main>
+            </body>
+            </html>
+        """.replace("__PAGE_CSS__", PAGE_CSS)).strip()
+
+    def apply_wifi_country(self, country: str) -> None:
+        """Save the country code and immediately apply regulatory settings."""
+        country = country.strip().upper()
+        if country not in _VALID_COUNTRY_CODES:
+            raise ValueError(f"Unknown country code: {country!r}")
+        _WIFI_COUNTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _WIFI_COUNTRY_FILE.write_text(country + "\n")
+        result = self.runner(
+            ["sudo", "/usr/share/chipbit/apply_wifi_country.sh"],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"apply_wifi_country.sh failed: {result.stderr.strip()}"
+            )
 
     def render_setup(self, *, message: str = "", error: str = "") -> str:
         """First-run WiFi setup page — shown once after admin card enrollment."""
@@ -1076,7 +1318,7 @@ class WebApp:
                   <script>{WIFI_SCAN_SCRIPT}</script>
                   <script>{WIFI_CONNECT_SCRIPT}</script>
                   <p class="muted">
-                    <a href="/">Skip — I'll connect later</a>
+                    <a href="/setup/skip">Skip — I'll connect later</a>
                     &nbsp;·&nbsp;
                     <a href="/debug">Diagnostics</a>
                   </p>
@@ -1193,7 +1435,7 @@ class WebApp:
             data_dir = form.get("data_dir", "").strip() or None
             title = CatalogTitle(
                 id=title_id, label=label, type="scummvm",
-                bundled=False, data="required", game_id=game_id,
+                bundled=False, game_id=game_id,
                 data_dir=data_dir,
                 install={"apt": ("scummvm",)},
             )
@@ -1217,8 +1459,7 @@ class WebApp:
         save_user_title(self.user_catalog_path, title)
         self._clear_readiness_cache()
         self.control.reload()
-        self.control.lock()
-        return f"Added “{label}” — tap “Tap card to enroll” to assign a card"
+        return f'Added “{label}” — use “Tap card to enroll” in the grid above to assign a card'
 
     def _unique_title_id(self, slug: str) -> str:
         catalog = self._load_catalog()
@@ -1231,6 +1472,468 @@ class WebApp:
                 return candidate
         import uuid
         return f"user-{uuid.uuid4().hex[:8]}"
+
+    def render_files(
+        self,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> str:
+        for dev, _ in self._detect_unmounted_devices():
+            try:
+                self.mount_device(dev)
+            except Exception:
+                pass
+        drives = self._detect_drives()
+        unmounted = self._detect_unmounted_devices()
+
+        items: list[str] = []
+        for d in drives:
+            items.append(
+                f'<li><a href="/files/browse?p={quote(str(d))}">'
+                f"{escape(d.name)}</a></li>"
+            )
+        for dev, label in unmounted:
+            items.append(
+                f'<li><form method="post" action="/files/mount" style="display:inline">'
+                f'<input type="hidden" name="device" value="{escape(dev)}" />'
+                f'<button type="submit">Mount: {escape(label)}</button>'
+                f"</form></li>"
+            )
+        if not items:
+            items.append(
+                "<li>No drives detected. Plug in a drive and click Rescan.</li>"
+            )
+        drive_list = "\n".join(items)
+
+        section = dedent(f"""
+            <section class="panel">
+              <p class="eyebrow"><a href="/">&#8592; Parent Console</a></p>
+              <h1>Game files</h1>
+              <p class="muted">Browse a drive and copy game data to <code>/games/</code>.</p>
+            </section>
+            <section class="panel panel-wide">
+              <h2>Drives</h2>
+              <p><a href="/files">Rescan</a></p>
+              <ul class="file-list">
+                {drive_list}
+              </ul>
+            </section>
+            """).strip()
+
+        return self._layout(
+            "Game files — ChipBit",
+            self._flash(message, error) + section,
+            include_events=False,
+        )
+
+    def render_file_browse(
+        self,
+        path_str: str,
+        *,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> str:
+        p = Path(path_str)
+        if ".." in p.parts or not str(p).startswith(str(_MEDIA_ROOT) + "/"):
+            raise ValueError("path must be on a mounted drive under /media/")
+        if not p.is_dir():
+            raise ValueError(f"not a directory: {p} (drive may have been ejected)")
+        try:
+            children = sorted(
+                p.iterdir(), key=lambda c: (c.is_file(), c.name.lower())
+            )
+        except PermissionError as exc:
+            raise ValueError(str(exc)) from exc
+
+        # Breadcrumb: Drives / chipbit / BluesYellow / ...
+        crumb_parts: list[str] = ['<a href="/files">Drives</a>']
+        built = Path("/")
+        for part in p.parts[1:]:  # skip root '/'
+            built = built / part
+            if str(built) == str(_MEDIA_ROOT):
+                crumb_parts.append(escape(part))
+            elif str(built).startswith(str(_MEDIA_ROOT) + "/"):
+                crumb_parts.append(
+                    f'<a href="/files/browse?p={quote(str(built))}">{escape(part)}</a>'
+                )
+        breadcrumb = " / ".join(crumb_parts)
+
+        # Up link
+        parent = p.parent
+        if str(parent).startswith(str(_MEDIA_ROOT) + "/"):
+            up_link = f'<p><a href="/files/browse?p={quote(str(parent))}">[up]</a></p>'
+        else:
+            up_link = f'<p><a href="/files">[up — drives]</a></p>'
+
+        # Copy-this-folder form (copies the current directory)
+        suggested = p.name.lower().replace(" ", "-")
+        copy_form = dedent(f"""
+            <section class="panel panel-wide">
+              <h2>Copy this folder to /games/</h2>
+              <form method="post" action="/files/copy" class="wifi-form">
+                <input type="hidden" name="source" value="{escape(str(p))}" />
+                <input type="hidden" name="back" value="{escape(str(p))}" />
+                <label>Game type
+                  <select id="copy-type">
+                    <option value="scummvm">ScummVM</option>
+                    <option value="dosbox">DOSBox</option>
+                    <option value="flash">Flash / Ruffle</option>
+                    <option value="">Other</option>
+                  </select>
+                </label>
+                <label>Destination in /games/
+                  <input type="text" name="dest" id="copy-dest"
+                         value="scummvm/{escape(suggested)}"
+                         placeholder="scummvm/monkey" required />
+                </label>
+                <button type="submit">Copy folder</button>
+              </form>
+              <script>
+              (function() {{
+                var sel = document.getElementById('copy-type');
+                var dest = document.getElementById('copy-dest');
+                sel.addEventListener('change', function() {{
+                  var slash = dest.value.indexOf('/');
+                  var name = slash >= 0 ? dest.value.slice(slash + 1) : dest.value;
+                  dest.value = sel.value ? sel.value + '/' + name : name;
+                }});
+              }})();
+              </script>
+            </section>
+            """).strip()
+
+        # File listing
+        rows: list[str] = []
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                if child.is_dir():
+                    rows.append(
+                        f'<li><a href="/files/browse?p={quote(str(child))}">'
+                        f"[+] {escape(child.name)}</a></li>"
+                    )
+                else:
+                    kb = child.stat().st_size // 1024
+                    rows.append(
+                        f'<li class="file-entry">'
+                        f"{escape(child.name)}"
+                        f'<span class="file-size muted"> {kb} KB</span></li>'
+                    )
+            except OSError:
+                continue
+
+        listing = "\n".join(rows) if rows else "<li><em>Empty folder</em></li>"
+
+        section = dedent(f"""
+            <section class="panel">
+              <p class="eyebrow">{breadcrumb}</p>
+              <h1>{escape(p.name)}</h1>
+            </section>
+            {copy_form}
+            <section class="panel panel-wide">
+              <h2>Contents</h2>
+              {up_link}
+              <ul class="file-list">
+                {listing}
+              </ul>
+            </section>
+            """).strip()
+
+        return self._layout(
+            f"{escape(p.name)} — ChipBit",
+            self._flash(message, error) + section,
+            include_events=False,
+        )
+
+    def start_copy_job(
+        self, *, source: str, dest: str, games_root: Path, back: str
+    ) -> str:
+        import uuid
+        job_id = uuid.uuid4().hex[:12]
+        with self._copy_jobs_lock:
+            self._copy_jobs[job_id] = {
+                "done": False, "error": None, "prefill": {}, "back": back,
+            }
+        t = threading.Thread(
+            target=self._run_copy_job,
+            args=(job_id, source, dest, games_root),
+            daemon=True,
+        )
+        t.start()
+        return job_id
+
+    def _run_copy_job(
+        self, job_id: str, source: str, dest: str, games_root: Path
+    ) -> None:
+        try:
+            self.copy_game_files(source, dest, games_root)
+            pf = self._guess_prefill(dest, games_root)
+            with self._copy_jobs_lock:
+                self._copy_jobs[job_id].update({"done": True, "prefill": pf})
+        except Exception as exc:
+            with self._copy_jobs_lock:
+                self._copy_jobs[job_id].update({"done": True, "error": str(exc)})
+
+    def render_copy_status(self, job_id: str) -> str:
+        with self._copy_jobs_lock:
+            job = dict(self._copy_jobs.get(job_id, {}))
+
+        if not job:
+            return self._layout(
+                "Copy — ChipBit",
+                self._flash(None, "Unknown copy job — it may have already completed.")
+                + '<section class="panel"><p><a href="/files">Back to drives</a></p></section>',
+                include_events=False,
+            )
+
+        if not job["done"]:
+            status_url = f"/files/copy/status?job={quote(job_id)}"
+            body = dedent(f"""
+                <section class="panel panel-wide">
+                  <h2>Copying&hellip;</h2>
+                  <div class="spinner"></div>
+                  <p class="muted">This may take a minute for large game data.</p>
+                </section>
+                """).strip()
+            return self._layout(
+                "Copying… — ChipBit",
+                body,
+                include_events=False,
+                head_extra=f'<meta http-equiv="refresh" content="2; url={escape(status_url)}" />',
+            )
+
+        with self._copy_jobs_lock:
+            self._copy_jobs.pop(job_id, None)
+
+        if job["error"]:
+            back = job.get("back", "")
+            back_url = (
+                f"/files/browse?p={quote(back)}" if back else "/files"
+            )
+            return self._layout(
+                "Copy failed — ChipBit",
+                self._flash(None, job["error"])
+                + f'<section class="panel"><p><a href="{escape(back_url)}">Back</a></p></section>',
+                include_events=False,
+            )
+
+        pf = job["prefill"]
+        qs = (
+            "type=" + quote(pf.get("type", ""))
+            + "&label=" + quote(pf.get("label", ""))
+        )
+        if "data_dir" in pf:
+            qs += "&data_dir=" + quote(pf["data_dir"])
+        if "game_id" in pf:
+            qs += "&game_id=" + quote(pf["game_id"])
+        if "swf" in pf:
+            qs += "&swf=" + quote(pf["swf"])
+        if "conf" in pf:
+            qs += "&conf=" + quote(pf["conf"])
+        # Redirect immediately via meta-refresh — no JS needed.
+        return self._layout(
+            "Done — ChipBit",
+            '<section class="panel"><p>Copy complete. Taking you to the card form&hellip;</p></section>',
+            include_events=False,
+            head_extra=f'<meta http-equiv="refresh" content="0; url=/?{escape(qs)}" />',
+        )
+
+    def _detect_drives(self) -> list[Path]:
+        drives = []
+        try:
+            for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].startswith("/media/"):
+                    drives.append(Path(_unescape_mount_path(parts[1])))
+        except OSError:
+            pass
+        return drives
+
+    def _detect_unmounted_devices(self) -> list[tuple[str, str]]:
+        """Return (device_path, label) for removable/optical devices not yet mounted."""
+        try:
+            result = self.runner(
+                ["lsblk", "-J", "-p", "-o", "NAME,LABEL,FSTYPE,MOUNTPOINT,TYPE,HOTPLUG"],
+                check=False, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                return []
+            data = json.loads(result.stdout)
+        except (OSError, ValueError):
+            return []
+
+        devices: list[tuple[str, str]] = []
+
+        def walk(nodes: list) -> None:
+            for node in nodes:
+                is_optical = node.get("type") == "rom"
+                is_hotplug = node.get("hotplug") in (True, "1", 1)
+                has_fs = bool(node.get("fstype"))
+                not_mounted = not node.get("mountpoint")
+                if (is_optical or is_hotplug) and has_fs and not_mounted:
+                    dev = node.get("name", "")
+                    label = node.get("label") or dev.rsplit("/", 1)[-1]
+                    devices.append((dev, label))
+                walk(node.get("children") or [])
+
+        walk(data.get("blockdevices", []))
+        return devices
+
+    def mount_device(self, device: str) -> str:
+        if not device.startswith("/dev/") or ".." in device:
+            raise ValueError(f"invalid device path: {device!r}")
+        result = self.runner(
+            ["udisksctl", "mount", "-b", device],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"Failed to mount {device}")
+        return result.stdout.strip()
+
+    def _list_dir_json(self, path_str: str) -> dict:
+        if not path_str:
+            return {
+                "path": "",
+                "parent": None,
+                "entries": [
+                    {"name": d.name, "path": str(d), "type": "dir", "size": 0}
+                    for d in self._detect_drives()
+                ],
+            }
+        p = Path(path_str)
+        # Validate before resolving — resolve() follows symlinks and would turn
+        # /media/chipbit (which may be a symlink to /run/media/chipbit) into a
+        # path that no longer starts with /media/, breaking the security check.
+        if ".." in p.parts or not str(p).startswith(str(_MEDIA_ROOT) + "/"):
+            raise ValueError("path must be on a mounted drive under /media/")
+        if not p.is_dir():
+            raise ValueError(f"not a directory: {p} (drive may have been ejected)")
+        try:
+            children = sorted(
+                p.iterdir(), key=lambda c: (c.is_file(), c.name.lower())
+            )
+        except PermissionError as exc:
+            raise ValueError(str(exc)) from exc
+        entries = []
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                stat = child.stat()
+                entries.append({
+                    "name": child.name,
+                    "path": str(child),
+                    "type": "file" if child.is_file() else "dir",
+                    "size": stat.st_size if child.is_file() else 0,
+                })
+            except OSError:
+                continue
+        parent = p.parent
+        parent_str: str | None = (
+            str(parent) if str(parent).startswith(str(_MEDIA_ROOT) + "/") else None
+        )
+        return {"path": str(p), "parent": parent_str, "entries": entries}
+
+    def copy_game_files(
+        self, source_str: str, dest_str: str, games_root: Path
+    ) -> str:
+        source = Path(source_str)
+        if ".." in source.parts or not str(source).startswith(str(_MEDIA_ROOT) + "/"):
+            raise ValueError("source must be on a drive mounted under /media/")
+        if not source.exists():
+            raise ValueError(f"source path not found: {source}")
+        dest_rel = dest_str.strip().lstrip("/")
+        if not dest_rel:
+            raise ValueError("destination path is required")
+        if ".." in Path(dest_rel).parts:
+            raise ValueError("destination cannot contain '..'")
+        dest = (games_root / dest_rel).resolve()
+        if not str(dest).startswith(str(games_root.resolve())):
+            raise ValueError("destination must be inside /games/")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            if dest.exists():
+                shutil.rmtree(dest)
+            _copytree_permissive(source, dest)
+        else:
+            shutil.copy2(str(source), str(dest))
+            dest.chmod(0o644)
+        os.sync()
+        return f"Copied {source.name} → /games/{dest_rel}"
+
+    def _guess_prefill(self, dest_rel: str, games_root: Path | None = None) -> dict[str, str]:
+        """Return form prefill hints based on the destination path."""
+        p = Path(dest_rel)
+        label = p.name.replace("-", " ").replace("_", " ").title()
+        parts = p.parts
+        if parts and parts[0] == "scummvm":
+            pf: dict[str, str] = {"type": "scummvm", "data_dir": dest_rel, "label": label}
+            if games_root is not None:
+                game_id = self._detect_scummvm_game_id(games_root / dest_rel)
+                if game_id:
+                    pf["game_id"] = game_id
+            return pf
+        if parts and parts[0] == "dosbox" and not dest_rel.endswith(".conf"):
+            pf: dict[str, str] = {"type": "dosbox", "label": label}
+            if games_root is not None:
+                conf_rel = self._generate_dosbox_conf(games_root / dest_rel, dest_rel)
+                if conf_rel:
+                    pf["conf"] = conf_rel
+            return pf
+        if (parts and parts[0] == "flash") or dest_rel.lower().endswith(".swf"):
+            swf_path = dest_rel
+            if games_root is not None and not dest_rel.lower().endswith(".swf"):
+                target = games_root / dest_rel
+                if target.is_dir():
+                    inner = sorted(f for f in target.rglob("*") if f.suffix.lower() == ".swf")
+                    if inner:
+                        try:
+                            swf_path = str(inner[0].relative_to(games_root))
+                        except ValueError:
+                            pass
+            return {"type": "ruffle", "swf": swf_path, "label": label}
+        if dest_rel.endswith(".conf"):
+            return {"type": "dosbox", "conf": dest_rel, "label": label}
+        return {"type": "exec", "label": label}
+
+    def _detect_scummvm_game_id(self, content_path: Path) -> str | None:
+        """Return the first game ID scummvm --detect finds in content_path, or None."""
+        import re
+        try:
+            result = self.runner(
+                [self.scummvm_executable, "--detect", f"--path={content_path}"],
+                check=False, capture_output=True, text=True, timeout=30.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in result.stdout.splitlines():
+            m = re.match(r"^\s+([a-z][a-z0-9.:_-]+)\s+\S", line)
+            if m:
+                return m.group(1)
+        return None
+
+    def _generate_dosbox_conf(self, game_dir: Path, dest_rel: str) -> str | None:
+        """Write a minimal dosbox.conf next to game_dir; return conf path relative to games_root."""
+        exe = _find_dos_executable(game_dir)
+        conf_path = game_dir.parent / (game_dir.name + ".conf")
+        conf_rel = str(Path(dest_rel).parent / (game_dir.name + ".conf"))
+        autoexec = [f"mount c {game_dir}", "c:"]
+        if exe:
+            autoexec.append(exe)
+        autoexec.append("exit")
+        conf_text = (
+            "[SDL]\nfullscreen=true\n\n"
+            "[dosbox]\nmemsize=16\n\n"
+            "[autoexec]\n" + "\n".join(autoexec) + "\n"
+        )
+        try:
+            conf_path.write_text(conf_text)
+            conf_path.chmod(0o644)
+        except OSError:
+            return None
+        return conf_rel
 
     def _require_unlocked(self, cards: CardsConfig) -> None:
         if "unlock" not in cards.system_cards:
@@ -1289,6 +1992,10 @@ class WebApp:
                 <a href="/debug">Diagnostics</a>
                 &nbsp;·&nbsp;
                 <a href="/setup">WiFi setup</a>
+                &nbsp;·&nbsp;
+                <form method="post" action="/settings/shutdown" style="display:inline">
+                  <button type="submit" class="link-button">Shut down</button>
+                </form>
               </p>
             </section>
             """).strip()
@@ -1326,6 +2033,7 @@ class WebApp:
                 <strong id="op-overlay-title"></strong>
                 <span id="op-overlay-msg"></span>
               </div>
+              <button id="op-overlay-dismiss" class="op-overlay-dismiss" type="button" hidden title="Dismiss">&times;</button>
             </div>
             <div id="tap-now-banner" class="flash ok" style="display:none">
               Hold your card to the reader now — waiting up to 30 seconds.
@@ -1358,6 +2066,12 @@ class WebApp:
               </table>
             </section>
             <section class="panel panel-wide">
+              <h2>Game files</h2>
+              <p class="muted">Copy game data from a USB drive to <code>/games/</code>
+                so ScummVM, DOSBox, and Ruffle titles can find it.</p>
+              <a href="/files">Open file browser →</a>
+            </section>
+            <section class="panel panel-wide">
               <h2>Add a custom card</h2>
               <p class="muted">
                 Create cards for software you own or websites you'd
@@ -1365,7 +2079,7 @@ class WebApp:
                 After saving, use "Tap card to enroll" in the grid
                 above to assign an RFID card.
               </p>
-              <details>
+              <details id="custom-web">
                 <summary>Add a website</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="web" />
@@ -1378,7 +2092,7 @@ class WebApp:
                   <button type="submit">Save website card</button>
                 </form>
               </details>
-              <details>
+              <details id="custom-exec">
                 <summary>Add an installed app</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="exec" />
@@ -1394,7 +2108,7 @@ class WebApp:
                   <button type="submit">Save app card</button>
                 </form>
               </details>
-              <details>
+              <details id="custom-scummvm">
                 <summary>Add a ScummVM game (you supply game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="scummvm" />
@@ -1412,7 +2126,7 @@ class WebApp:
                   <button type="submit">Save ScummVM card</button>
                 </form>
               </details>
-              <details>
+              <details id="custom-dosbox">
                 <summary>Add a DOSBox game (you supply game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="dosbox" />
@@ -1427,7 +2141,39 @@ class WebApp:
                   <button type="submit">Save DOSBox card</button>
                 </form>
               </details>
+              <details id="custom-ruffle">
+                <summary>Add a Flash/Ruffle game (you supply the .swf)</summary>
+                <form method="post" action="/titles/custom" class="wifi-form">
+                  <input type="hidden" name="type" value="ruffle" />
+                  <label>Name
+                    <input type="text" name="label"
+                      placeholder="Math Blaster" required /></label>
+                  <label>
+                    SWF path under /games/
+                    <input type="text" name="swf"
+                      placeholder="flash/mathblaster.swf" required />
+                  </label>
+                  <button type="submit">Save Ruffle card</button>
+                </form>
+              </details>
             </section>
+            <script>
+              (function() {{
+                const p = new URLSearchParams(window.location.search);
+                const type = p.get('type');
+                if (!type) return;
+                const details = document.getElementById('custom-' + type);
+                if (!details) return;
+                details.open = true;
+                for (const [key, val] of p.entries()) {{
+                  if (key === 'type' || !val) continue;
+                  const inp = details.querySelector('[name="' + key + '"]');
+                  if (inp) inp.value = val;
+                }}
+                details.scrollIntoView({{behavior: 'smooth'}});
+                history.replaceState({{}}, '', '/');
+              }})();
+            </script>
             <section class="panel panel-wide">
               <h2>Settings</h2>
               <h3>Wi-Fi</h3>
@@ -1468,6 +2214,10 @@ class WebApp:
               <form method="post" action="/settings/lock" class="inline-form">
                 <button type="submit">Lock parent controls</button>
               </form>
+              <form method="post" action="/settings/shutdown" class="inline-form"
+                    onsubmit="return confirm('Shut down the Pi now?')">
+                <button type="submit">Shut down</button>
+              </form>
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -1479,7 +2229,8 @@ class WebApp:
         bindings_by_title: dict[str, list[str]],
     ) -> str:
         summary = escape(self._title_summary(title, catalog))
-        state = escape(self._title_state(title, catalog))
+        raw_state = self._title_state(title, catalog)
+        state = escape(raw_state)
         bound_cards = ", ".join(sorted(bindings_by_title.get(title.id, [])))
         bound_cards = escape(bound_cards or "none")
         action = quote(title.id)
@@ -1684,6 +2435,7 @@ class WebApp:
         *,
         include_events: bool,
         script: str | None = None,
+        head_extra: str = "",
     ) -> str:
         script_body = script
         if include_events and script_body is None:
@@ -1698,6 +2450,7 @@ class WebApp:
               <meta charset="utf-8" />
               <meta name="viewport" content="width=device-width, initial-scale=1" />
               <title>{escape(title)}</title>
+              {head_extra}
               <style>
             {PAGE_CSS}
               </style>
@@ -1733,6 +2486,14 @@ class WebApp:
         return "".join(parts)
 
 
+_RUFFLE_MIME: dict[str, str] = {
+    ".html": "text/html; charset=utf-8",
+    ".js":   "application/javascript",
+    ".wasm": "application/wasm",
+    ".map":  "application/json",
+}
+
+
 def create_web_server(
     host: str,
     port: int,
@@ -1745,9 +2506,11 @@ def create_web_server(
     scummvm_executable: str = "scummvm",
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS,
     user_catalog_path: Path | None = None,
+    games_root: Path = Path("/games"),
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
     art_root = catalog_path.parent / "art"
+    ruffle_root = Path("/usr/share/chipbit/ruffle")
     app = WebApp(
         catalog_path=catalog_path,
         cards_path=cards_path,
@@ -1790,12 +2553,26 @@ def create_web_server(
                     self._send_html(200, app.render_index())
                     return
                 if path == "/setup":
-                    self._send_html(200, app.render_setup())
+                    if not _WIFI_COUNTRY_FILE.exists():
+                        self._send_html(200, app.render_country_picker())
+                    else:
+                        qs = parse_qs(urlparse(self.path).query)
+                        msg = "Connected to Wi-Fi." if qs.get("connected") else ""
+                        self._send_html(200, app.render_setup(message=msg))
+                    return
+                if path == "/setup/skip":
+                    _WIFI_SETUP_FILE.touch()
+                    self._redirect("/")
                     return
                 if path == "/kiosk":
                     cards = load_cards(app.cards_path)
                     if "unlock" not in cards.system_cards:
                         self._redirect("/admin")
+                        return
+                    # Country chosen but WiFi setup not yet completed → guide
+                    # the user through setup before showing the kiosk.
+                    if _WIFI_COUNTRY_FILE.exists() and not _WIFI_SETUP_FILE.exists():
+                        self._redirect("/setup")
                         return
                     self._send_html(200, app.render_kiosk())
                     return
@@ -1814,7 +2591,31 @@ def create_web_server(
                 if path == "/debug":
                     self._send_html(200, app.wifi_diagnostics())
                     return
-            except (ConfigLoadError, ControlApiError) as exc:
+                if path == "/files":
+                    qs = parse_qs(urlparse(self.path).query)
+                    self._send_html(200, app.render_files(
+                        message=qs.get("msg", [None])[0],
+                        error=qs.get("err", [None])[0],
+                    ))
+                    return
+                if path == "/files/browse":
+                    qs = parse_qs(urlparse(self.path).query)
+                    browse_path = qs.get("p", [""])[0]
+                    msg = qs.get("msg", [None])[0]
+                    err = qs.get("err", [None])[0]
+                    try:
+                        self._send_html(200, app.render_file_browse(
+                            browse_path, message=msg, error=err,
+                        ))
+                    except (ValueError, OSError) as exc:
+                        self._send_html(400, app.render_files(error=str(exc)))
+                    return
+                if path == "/files/copy/status":
+                    qs = parse_qs(urlparse(self.path).query)
+                    job_id = qs.get("job", [""])[0]
+                    self._send_html(200, app.render_copy_status(job_id))
+                    return
+            except (ConfigLoadError, ControlApiError, InstallationError) as exc:
                 self._send_html(502, app.render_index(error=str(exc)))
                 return
 
@@ -1839,7 +2640,56 @@ def create_web_server(
                 self.wfile.write(_DEFAULT_ART_SVG)
                 return
 
+            # Ruffle web bundle (JS + WASM) served from the install directory.
+            if path.startswith("/ruffle/"):
+                rel = path[len("/ruffle/"):]
+                if not rel or ".." in rel.split("/"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self._serve_file(ruffle_root / rel, _RUFFLE_MIME)
+                return
+
+            # SWF game files served so Ruffle can load them over HTTP
+            # (file:// is blocked by Ruffle's own runtime guard).
+            if path.startswith("/swf/"):
+                rel = unquote(path[len("/swf/"):])
+                if not rel or ".." in rel.split("/") or not rel.lower().endswith(".swf"):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                resolved = (games_root / rel).resolve()
+                if not str(resolved).startswith(str(games_root.resolve())):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                if not resolved.exists():
+                    log.warning("SWF not found: %s (games_root=%s)", resolved, games_root)
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self._serve_file(resolved, {"application/x-shockwave-flash"})
+                return
+
             self._send_html(404, app.render_index(error="not found"))
+
+        def _serve_file(self, file_path: Path, mime_map: dict | set) -> None:
+            suffix = file_path.suffix.lower()
+            if isinstance(mime_map, set):
+                mime = next(iter(mime_map))
+            else:
+                mime = mime_map.get(suffix, "application/octet-stream")
+            try:
+                data = file_path.read_bytes()
+            except OSError:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
         def _send_json(self, code: int, payload: dict) -> None:
             body = json.dumps(payload).encode()
@@ -1852,13 +2702,25 @@ def create_web_server(
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path
             form = self._read_form()
+            if path == "/setup/country":
+                country = form.get("country", "").strip().upper()
+                try:
+                    app.apply_wifi_country(country)
+                except (ValueError, RuntimeError) as exc:
+                    self._send_html(400, app.render_country_picker(error=str(exc)))
+                    return
+                self._send_html(200, app.render_rebooting())
+                threading.Thread(
+                    target=_reboot_after_delay,
+                    args=(app.runner,),
+                    daemon=True,
+                ).start()
+                return
+
             if path == "/setup/wifi":
                 try:
                     app.configure_wifi(form.get("ssid", ""), form.get("password"))
-                    try:
-                        app.control.unlock()
-                    except Exception:
-                        pass
+                    _WIFI_SETUP_FILE.touch()
                     # Kick NTP sync — Pi has no RTC so the clock is wrong at boot.
                     # Fire-and-forget; sync completes in the background within seconds.
                     try:
@@ -1883,6 +2745,31 @@ def create_web_server(
                 except Exception as exc:
                     msg = f"Error: {exc}"
                 self._send_html(200, app.wifi_diagnostics(message=msg))
+                return
+            if path == "/files/mount":
+                try:
+                    msg = app.mount_device(form.get("device", ""))
+                    self._redirect("/files?msg=" + quote(msg))
+                except (ValueError, RuntimeError, OSError) as exc:
+                    self._redirect("/files?err=" + quote(str(exc)))
+                return
+            if path == "/files/copy":
+                back = form.get("back", "")
+                try:
+                    catalog = app._load_catalog()
+                    job_id = app.start_copy_job(
+                        source=form.get("source", ""),
+                        dest=form.get("dest", ""),
+                        games_root=catalog.settings.games_root,
+                        back=back,
+                    )
+                    self._redirect("/files/copy/status?job=" + quote(job_id))
+                except (ConfigLoadError, ValueError, OSError) as exc:
+                    err_qs = "err=" + quote(str(exc))
+                    if back:
+                        self._redirect("/files/browse?p=" + quote(back) + "&" + err_qs)
+                    else:
+                        self._redirect("/files?" + err_qs)
                 return
             # Slow enrollment paths return JSON so the browser can show errors
             # inline without losing context. Quick setting paths stay HTML.
@@ -1909,6 +2796,8 @@ def create_web_server(
                     message = app.set_keyboard_layout(form.get("layout", ""))
                 elif path == "/settings/lock":
                     message = app.lock_controls()
+                elif path == "/settings/shutdown":
+                    message = app.shutdown_system()
                 elif path == "/wifi/connect":
                     message = app.configure_wifi(
                         form.get("ssid", ""),

@@ -13,10 +13,11 @@ if [ -d /filesystem ]; then
     cp -a /filesystem/. /
     rm -rf /filesystem
 fi
+chmod +x /usr/share/chipbit/apply_wifi_country.sh
 
 # Load module config (sourced by CustomPiOS before calling this script).
 CHIPBIT_VERSION="${CHIPBIT_VERSION:-0.1.0}"
-RUFFLE_TAG="${RUFFLE_TAG:-2024-10-13}"
+RUFFLE_WEB_VERSION="${RUFFLE_WEB_VERSION:-0.3.0}"
 CHIPBIT_UID="${CHIPBIT_UID:-1000}"
 CHIPBIT_GID="${CHIPBIT_GID:-1000}"
 CHIPBIT_WEB_PORT="${CHIPBIT_WEB_PORT:-8080}"
@@ -97,6 +98,8 @@ for _attempt in 1 2 3; do
         ca-certificates \
         openssh-server \
         parted \
+        scummvm \
+        unzip \
     && break
     echo "apt-get install attempt ${_attempt} failed; waiting 60s for mirrors to sync..."
     sleep 60
@@ -112,27 +115,21 @@ else
     ln -sf "$(command -v dosbox)" /usr/local/bin/dosbox-staging
 fi
 
-# Ruffle (Rust Flash player — no apt package; GitHub releases only publish
-# aarch64 and x86_64 binaries, not armhf/armv7l).
-case "$(uname -m)" in
-    aarch64) RUFFLE_ARCH="aarch64" ;;
-    x86_64)  RUFFLE_ARCH="x86_64"  ;;
-    *)
-        echo "Ruffle: no binary published for $(uname -m) — skipping."
-        echo "Flash (ruffle) titles will not work on this image."
-        RUFFLE_ARCH=""
-        ;;
-esac
-if [ -n "${RUFFLE_ARCH}" ]; then
-    RUFFLE_ARCHIVE="ruffle-${RUFFLE_TAG}-linux-${RUFFLE_ARCH}.tar.gz"
-    RUFFLE_URL="https://github.com/ruffle-rs/ruffle/releases/download/${RUFFLE_TAG}/${RUFFLE_ARCHIVE}"
-    echo "Downloading Ruffle ${RUFFLE_TAG} (${RUFFLE_ARCH})..."
-    if curl -fsSL "${RUFFLE_URL}" | tar -xz -C /usr/local/bin ruffle; then
-        chmod 0755 /usr/local/bin/ruffle
-        echo "Ruffle installed at /usr/local/bin/ruffle"
-    else
-        echo "Warning: Ruffle download failed — Flash titles will not work."
-    fi
+# Ruffle (Flash player) — self-hosted web bundle (JS + WASM) rather than
+# the desktop binary, which requires glibc 2.39 but Bookworm ships 2.36.
+# The launcher opens player.html via file:// with --allow-file-access-from-files
+# so no web server is needed to serve SWF files.
+# player.html was installed from the filesystem overlay above; unzip -n
+# (never overwrite) ensures it is not replaced if the bundle ships one too.
+RUFFLE_WEB_URL="https://github.com/ruffle-rs/ruffle/releases/download/v${RUFFLE_WEB_VERSION}/ruffle-${RUFFLE_WEB_VERSION}-web-selfhosted.zip"
+echo "Downloading Ruffle web bundle ${RUFFLE_WEB_VERSION}..."
+mkdir -p /usr/share/chipbit/ruffle
+if curl -fsSL "${RUFFLE_WEB_URL}" -o /tmp/ruffle-web.zip; then
+    unzip -qn /tmp/ruffle-web.zip -d /usr/share/chipbit/ruffle/
+    rm -f /tmp/ruffle-web.zip
+    echo "Ruffle web bundle installed at /usr/share/chipbit/ruffle/"
+else
+    echo "Warning: Ruffle web bundle download failed — Flash titles will not work."
 fi
 
 # ---------------------------------------------------------------------------
@@ -296,6 +293,21 @@ chipbit ALL=(root) NOPASSWD: /usr/bin/systemctl restart systemd-timesyncd
 EOF
 chmod 0440 /etc/sudoers.d/chipbit-timesyncd
 
+# Allow restarting the chipbit services (useful for development iteration
+# and future in-place update support).
+cat > /etc/sudoers.d/chipbit-services <<'EOF'
+chipbit ALL=(root) NOPASSWD: /usr/bin/systemctl restart chipbit-web
+chipbit ALL=(root) NOPASSWD: /usr/bin/systemctl restart chipbit-launcher
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-services
+
+cat > /etc/sudoers.d/chipbit-power <<'EOF'
+chipbit ALL=(root) NOPASSWD: /usr/sbin/shutdown -h now
+chipbit ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+chipbit ALL=(root) NOPASSWD: /usr/share/chipbit/apply_wifi_country.sh
+EOF
+chmod 0440 /etc/sudoers.d/chipbit-power
+
 # Allow the web service to read system journal entries for diagnostics.
 cat > /etc/sudoers.d/chipbit-logs <<'EOF'
 chipbit ALL=(root) NOPASSWD: /usr/bin/journalctl *
@@ -339,6 +351,18 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+# Allow chipbit to mount removable media (USB drives, optical discs) via
+# udisks2 without an interactive logind seat.  Without this, udisksctl mount
+# is denied because the service user has no active seat.
+cat > /etc/polkit-1/rules.d/50-chipbit-media.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.udisks2.filesystem-mount") === 0 &&
+            subject.user === "chipbit") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+
 # ---------------------------------------------------------------------------
 # Kiosk: the autologin.conf drop-in (already in the filesystem overlay) makes
 # getty@tty1 autologin as the chipbit user.  .bash_profile detects tty1 and
@@ -361,26 +385,29 @@ done
 echo "chipbit" > /etc/hostname
 sed -i 's/raspberrypi/chipbit/g' /etc/hosts 2>/dev/null || true
 
-# Pi OS first-boot setup normally prompts for WiFi country code; since we
-# bypass that, set it here.  Without it the BCM43456 won't scan any channels.
-WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
-echo "REGDOMAIN=${WIFI_COUNTRY}" > /etc/default/crda
+# Disable the dump_obss firmware feature (0x82000) which causes chanspec
+# failures when the driver tries to switch to a 2.4 GHz channel, leaving the
+# radio stuck on 5 GHz only.  roamoff=1 lets the OS handle roaming decisions
+# rather than the firmware.  This matches the config used by Home Assistant OS.
+cat > /etc/modprobe.d/brcmfmac.conf <<'EOF'
+options brcmfmac roamoff=1 feature_disable=0x82000
+EOF
 
-# crda reads /etc/default/crda but only fires via a udev event that can race
-# or miss entirely with brcmfmac.  This oneshot service is the belt-and-suspenders:
-# it runs before NetworkManager so the radio is unblocked and the domain is set
-# before NM starts its first background scan.
-cat > /etc/systemd/system/chipbit-wifi-country.service <<EOF
+# WiFi country code is chosen by the user during first-run setup and applied by
+# apply_wifi_country.sh (installed via the filesystem overlay).  The script
+# patches brcmfmac NVRAM files, writes cfg80211 module params, writes a udev
+# rule, and calls iw reg set — all at runtime so a single image works worldwide.
+cat > /etc/systemd/system/chipbit-wifi-country.service <<'EOF'
 [Unit]
-Description=Unblock WiFi radio and set regulatory domain
+Description=Apply ChipBit WiFi country regulatory settings
 Before=NetworkManager.service wpa_supplicant.service
 DefaultDependencies=no
+ConditionPathExists=/var/lib/chipbit/wifi_country
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/rfkill unblock wifi
-ExecStart=/usr/sbin/iw reg set ${WIFI_COUNTRY}
+ExecStart=/usr/share/chipbit/apply_wifi_country.sh
 
 [Install]
 WantedBy=sysinit.target

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+ruffle-player { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<script src="ruffle.js"></script>
+<script>
+window.addEventListener("load", function () {
+    var ruffle = window.RufflePlayer.newest();
+    var player = ruffle.createPlayer();
+    document.body.appendChild(player);
+    var swf = new URLSearchParams(location.search).get("swf");
+    if (swf) {
+        player.load(swf);
+    }
+});
+</script>
+</body>
+</html>

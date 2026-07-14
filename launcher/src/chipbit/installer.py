@@ -227,9 +227,7 @@ def enroll_card(
             data_checker=data_checker,
             scummvm_executable=scummvm_executable,
         ):
-            raise DataMissingError(
-                f"required data for {title.id} is missing; refusing to bind card"
-            )
+            _data_missing_hint(title, games_root)
         yield InstallProgress(
             step="data-ready",
             message=f"Verified required data for {title.label}",
@@ -290,6 +288,26 @@ def has_network_connection(
         return False
 
 
+def _data_missing_hint(title: CatalogTitle, games_root: Path) -> None:
+    """Raise a DataMissingError with a human-readable hint about what to check."""
+    content_path = resolve_title_content_path(title, games_root)
+    if content_path is None or not content_path.exists():
+        raise DataMissingError(
+            f"Game data folder not found. Copy your game files to "
+            f"{games_root / (title.data_dir or ('scummvm/' + (title.game_id or title.id)))} "
+            f"and try again."
+        )
+    if title.type == "scummvm" and title.game_id:
+        raise DataMissingError(
+            f"ScummVM could not recognise game ID \"{title.game_id}\" in "
+            f"{content_path}. Check that the ScummVM game ID is correct "
+            f"(run \"{title.game_id}\" through scummvm --list-games to verify)."
+        )
+    raise DataMissingError(
+        f"Required data for \"{title.label}\" is missing or not recognised in {content_path}."
+    )
+
+
 def has_required_data(
     title: CatalogTitle,
     games_root: Path = DEFAULT_GAMES_ROOT,
@@ -310,10 +328,15 @@ def has_required_data(
     if title.type == "scummvm":
         if title.game_id is None or not content_path.exists():
             return False
-        result = _run_command(
-            [scummvm_executable, "--detect", f"--path={content_path}"],
-            runner=runner,
-        )
+        try:
+            result = _run_command(
+                [scummvm_executable, "--detect", f"--path={content_path}"],
+                runner=runner,
+                timeout=30.0,
+            )
+        except (InstallationError, OSError):
+            # scummvm timed out or isn't installed yet — report not ready.
+            return False
         return result.returncode == 0 and _scummvm_detect_output_has_game_id(
             result.stdout,
             title.game_id,
