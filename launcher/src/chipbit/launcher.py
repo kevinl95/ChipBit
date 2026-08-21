@@ -293,6 +293,9 @@ class LauncherService:
             return {
                 "running": running,
                 "current": current,
+                "current_id": (
+                    None if self._current_title is None else self._current_title.id
+                ),
                 "current_art": (
                     None if self._current_title is None else self._current_title.art
                 ),

@@ -83,6 +83,7 @@ for _attempt in 1 2 3; do
         xwayland \
         dbus \
         chromium-browser \
+        fonts-dejavu-core \
         python3-installer \
         python3-yaml \
         python3-evdev \

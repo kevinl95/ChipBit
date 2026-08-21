@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import threading
 import time
+import zlib
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -147,259 +148,574 @@ def _copytree_permissive(src: Path, dst: Path) -> None:
     dst.chmod(0o755)
 
 
-# Served for any /art/<name> that doesn't exist on disk — generic app placeholder.
+# The wordmark glyph: a card, because that is the whole product.
+CHIPBIT_MARK = (
+    '<svg width="22" height="18" viewBox="0 0 22 18" aria-hidden="true">'
+    '<rect x="1.2" y="1.2" width="19.6" height="15.6" rx="3.4" '
+    'fill="none" stroke="currentColor" stroke-width="2.4"/>'
+    '<rect x="5" y="5" width="7" height="5.5" rx="1.4" fill="currentColor"/>'
+    "</svg>"
+)
+
+# One drawing, used on every screen that is waiting for a card: the kiosk, the
+# first-run page and the lock screen.  It shows the gesture -- hold the card to
+# the reader -- which is the only instruction that matters and the only one a
+# pre-reader can follow.
+CARD_TAP_SVG = (
+    '<svg class="card-tap" viewBox="0 0 160 120" fill="none" aria-hidden="true"'
+    ' stroke="currentColor" stroke-width="4"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<rect x="8" y="42" width="28" height="48" rx="7" fill="#fffdf8"/>'
+    '<path class="wave" d="M46 52a20 20 0 0 1 0 28"/>'
+    '<path class="wave" d="M58 45a32 32 0 0 1 0 42"/>'
+    '<path class="wave" d="M70 38a44 44 0 0 1 0 56"/>'
+    '<g transform="rotate(-8 112 60)">'
+    '<rect x="80" y="26" width="64" height="68" rx="9" fill="#fffdf8"/>'
+    '<rect x="92" y="40" width="22" height="17" rx="4" fill="#f0b429"/>'
+    '<path d="M92 70h40M92 82h24"/>'
+    "</g>"
+    "</svg>"
+)
+
+# Card inks -----------------------------------------------------------------
+#
+# Every title is dealt one of these flat printed inks, picked from its catalog
+# id.  The same ink tints the title's tile in the parent console and floods the
+# whole kiosk screen while that title loads, so "the blue card" means the same
+# thing on the table, on the TV, and on the laminated card art.  crc32 rather
+# than hash() because the choice has to survive a reboot.
+CARD_INKS: tuple[tuple[str, str], ...] = (
+    ("#c0392f", "#ffffff"),  # tomato
+    ("#b5561a", "#ffffff"),  # clay
+    ("#f0b429", "#1a1a19"),  # school-bus yellow, takes dark type
+    ("#2b7a4b", "#ffffff"),  # pine
+    ("#1f5fa8", "#ffffff"),  # ink blue
+    ("#0c6f78", "#ffffff"),  # teal
+    ("#a83a6e", "#ffffff"),  # mulberry
+)
+
+
+def ink_for(key: str) -> tuple[str, str]:
+    """Return the (background, foreground) ink pair dealt to a catalog id."""
+    return CARD_INKS[zlib.crc32(key.encode("utf-8")) % len(CARD_INKS)]
+
+
+# Served for any /art/<name> that doesn't exist on disk.  This is the *label*
+# of an unprinted card -- chip mark and blank ruled lines, full bleed -- not a
+# picture of a card: the kiosk already frames it in one, and a card drawn
+# inside a card frame reads as a mistake.
 _DEFAULT_ART_SVG: bytes = (
-    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">'
-    b'<rect width="200" height="200" rx="24" fill="#6d28d9"/>'
-    b'<circle cx="100" cy="100" r="58" fill="rgba(255,255,255,0.15)"/>'
-    b'<polygon points="82,68 82,132 142,100" fill="white"/>'
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 200">'
+    b'<rect width="150" height="200" fill="#f4ede0"/>'
+    b'<rect x="26" y="34" width="44" height="34" rx="7" '
+    b'fill="#f0b429" stroke="#22201c" stroke-width="5"/>'
+    b'<rect x="26" y="96" width="98" height="9" rx="4.5" fill="#22201c"/>'
+    b'<rect x="26" y="119" width="66" height="9" rx="4.5" fill="#c9c2b4"/>'
+    b'<rect x="26" y="142" width="80" height="9" rx="4.5" fill="#c9c2b4"/>'
     b"</svg>"
 )
 
 PAGE_CSS = dedent("""
+    /* Parent console.  This is a workbench: a parent stands at it for two
+       minutes to bind a card, then leaves.  So it is built from rules,
+       headings and whitespace rather than a stack of floating panels, and the
+       only things that carry a shadow are the things you can press or pick up.
+       The kiosk (KIOSK_CSS) is the opposite surface and shares nothing but the
+       inks -- one is read across a room by a six-year-old, this one is read at
+       arm's length by an adult in a hurry. */
     :root {
       color-scheme: light;
-      --paper: #f5f0e8;
-      --ink: #16212c;
-      --accent: #d95f32;
-      --panel: #fffaf4;
-      --border: #d9c8b3;
-      --muted: #5d6b79;
-      --ok: #2b7a45;
-      --bad: #9a2d21;
+      --paper:   #fbf7ef;
+      --card:    #fffdf8;
+      --ink:     #1a1a19;
+      --ink-70:  #4b4842;
+      --ink-45:  #77726a;
+      --rule:    #ded5c6;
+      --accent:  #1f5fa8;
+      --ok:      #2b7a4b;
+      --warn:    #8a5e06;
+      --bad:     #b3271b;
+      --serif:   Georgia, "Iowan Old Style", "Palatino Linotype",
+                 "Noto Serif", "DejaVu Serif", serif;
+      --sans:    Piboto, system-ui, -apple-system, "Segoe UI",
+                 "Noto Sans", "DejaVu Sans", sans-serif;
+      --mono:    "DejaVu Sans Mono", ui-monospace, "Cascadia Mono",
+                 Menlo, monospace;
+      /* A 1.6-ish step scale, so spacing carries meaning instead of
+         everything sitting one gap-4 apart. */
+      --s1: 0.25rem;
+      --s2: 0.5rem;
+      --s3: 0.8rem;
+      --s4: 1.25rem;
+      --s5: 2rem;
+      --s6: 3.25rem;
     }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      background: radial-gradient(circle at top, #fff7eb, var(--paper) 60%);
+      font-family: var(--sans);
+      font-size: 1rem;
+      line-height: 1.55;
+      background: var(--paper);
       color: var(--ink);
+      -webkit-text-size-adjust: 100%;
     }
-    main {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 2rem 1rem 4rem;
-    }
-    header {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: baseline;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1rem;
-      box-shadow: 0 10px 24px rgba(22, 33, 44, 0.08);
-    }
-    .panel-wide {
-      margin-bottom: 1rem;
-    }
-    .catalog-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-      margin: 1rem 0;
-    }
-    .title-card {
-      background: rgba(255, 255, 255, 0.7);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 1rem;
-      overflow-wrap: break-word;
-      word-break: break-all;
-    }
-    .eyebrow {
-      margin: 0 0 0.5rem;
-      color: var(--accent);
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-    .flash {
-      padding: 0.8rem 1rem;
-      margin-bottom: 1rem;
-      border-radius: 12px;
-    }
-    .flash.ok {
-      background: rgba(43, 122, 69, 0.12);
-      color: var(--ok);
-    }
-    .flash.error {
-      background: rgba(154, 45, 33, 0.12);
-      color: var(--bad);
-    }
-    .muted {
-      color: var(--muted);
-    }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap: 0.75rem;
-    }
-    .stats div {
-      background: rgba(217, 200, 179, 0.2);
-      padding: 0.75rem;
-      border-radius: 12px;
-    }
-    button {
-      border: 0;
-      border-radius: 999px;
-      padding: 0.7rem 1rem;
-      background: var(--accent);
-      color: white;
-      cursor: pointer;
-    }
-    button:hover {
-      filter: brightness(0.95);
-    }
-    .btn-link {
-      display: inline-block;
-      margin-top: 0.75rem;
-      padding: 0.6rem 1rem;
-      background: var(--accent);
-      color: white;
-      border-radius: 999px;
-      text-decoration: none;
-      font-size: 0.9rem;
-    }
-    .btn-link:hover {
-      filter: brightness(0.95);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th,
-    td {
-      padding: 0.6rem;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      vertical-align: top;
-    }
-    .inline-form,
-    .wifi-form {
+
+    /* --- masthead ------------------------------------------------------- */
+    .site-header {
+      background: var(--ink);
+      color: var(--paper);
+      padding: var(--s3) var(--s4);
       display: flex;
       flex-wrap: wrap;
-      gap: 0.5rem;
       align-items: center;
+      justify-content: space-between;
+      gap: var(--s3);
     }
-    input,
-    select {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 0.55rem 0.7rem;
-      background: white;
-    }
-    code {
-      background: rgba(217, 200, 179, 0.24);
-      padding: 0.15rem 0.3rem;
-      border-radius: 6px;
-    }
-    details {
-      margin-top: 0.75rem;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 0.6rem 1rem;
-    }
-    details[open] {
-      padding-bottom: 1rem;
-    }
-    summary {
-      cursor: pointer;
-      font-weight: bold;
-      padding: 0.2rem 0;
-      list-style: none;
-    }
-    summary::before {
-      content: "▶ ";
-      font-size: 0.7em;
-    }
-    details[open] summary::before {
-      content: "▼ ";
-    }
-    details .wifi-form {
-      margin-top: 0.75rem;
-    }
-    @media (max-width: 640px) {
-      header {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      .inline-form,
-      .wifi-form {
-        flex-direction: column;
-        align-items: stretch;
-      }
-      button,
-      input,
-      select {
-        width: 100%;
-        box-sizing: border-box;
-      }
-    }
-    .spinner {
-      width: 2.2rem;
-      height: 2.2rem;
-      border: 3px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      margin: 0 auto 0.75rem;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .connecting-box {
-      text-align: center;
-      padding: 2rem 1rem;
-      color: var(--muted);
-    }
-    .op-overlay {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      z-index: 99;
-      background: var(--panel);
-      border-top: 3px solid var(--accent);
-      padding: 1rem 1.5rem;
+    .site-title,
+    .wordmark {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: var(--paper);
       display: flex;
       align-items: center;
-      gap: 1rem;
-      box-shadow: 0 -4px 24px rgba(22,33,44,.18);
+      gap: var(--s2);
     }
-    .op-overlay[hidden] { display: none; }
-    .op-overlay .spinner {
-      width: 1.5rem;
-      height: 1.5rem;
-      border-width: 3px;
+    .wordmark a {
+      color: inherit;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .wordmark svg { display: block; flex: none; }
+    .live {
+      font-size: 0.85rem;
+      color: #cfc7b8;
+      text-align: right;
+      line-height: 1.35;
+    }
+    .live strong { color: var(--paper); font-weight: 600; }
+
+    main {
+      max-width: 60rem;
+      margin: 0 auto;
+      padding: var(--s5) var(--s4) var(--s6);
+    }
+
+    /* --- type ----------------------------------------------------------- */
+    h1 {
+      font-family: var(--serif);
+      font-size: clamp(1.7rem, 4vw, 2.3rem);
+      line-height: 1.15;
+      margin: 0 0 var(--s3);
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: 1.3rem;
+      margin: 0 0 var(--s3);
+      padding-bottom: var(--s1);
+      border-bottom: 2px solid var(--ink);
+      display: inline-block;
+    }
+    h3 {
+      font-size: 1rem;
+      margin: var(--s4) 0 var(--s2);
+    }
+    p { margin: 0 0 var(--s3); }
+    .lede { font-size: 1.08rem; max-width: 46rem; }
+    .muted { color: var(--ink-70); }
+    .small { font-size: 0.88rem; }
+    a { color: var(--accent); text-underline-offset: 2px; }
+    a:hover { text-decoration-thickness: 2px; }
+    code, .uid {
+      font-family: var(--mono);
+      font-size: 0.92em;
+      background: #efe8db;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+
+    /* --- structure ------------------------------------------------------ */
+    .block { margin: 0 0 var(--s6); }
+    .block > :last-child { margin-bottom: 0; }
+    .rule {
+      border: 0;
+      border-top: 1px solid var(--rule);
+      margin: var(--s5) 0;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s3);
+      align-items: center;
+    }
+
+    /* --- the card tiles ------------------------------------------------- */
+    /* These are the only true "cards" in the console, because they stand for
+       an actual laminated card.  Hence the ink keyline, the printed color
+       band and the hard offset shadow -- a thing lying on a table, not a
+       floating pane of glass. */
+    .catalog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+      gap: var(--s4);
+    }
+    .title-card {
+      display: flex;
+      flex-direction: column;
+      background: var(--card);
+      border: 2px solid var(--ink);
+      border-radius: 10px;
+      box-shadow: 4px 4px 0 rgba(26, 26, 25, 0.14);
+      overflow: hidden;
+      overflow-wrap: anywhere;
+    }
+    .title-card .band {
+      height: 0.7rem;
+      background: var(--tile-ink, var(--ink));
+    }
+    .title-card .body {
+      padding: var(--s3) var(--s3) var(--s4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--s2);
+      flex: 1;
+    }
+    .title-card h2 {
+      font-family: var(--serif);
+      font-size: 1.15rem;
+      line-height: 1.2;
       margin: 0;
-      flex-shrink: 0;
+      padding: 0;
+      border: 0;
+      display: block;
     }
-    .op-overlay.error .spinner { display: none; }
-    .op-overlay-dismiss {
-      margin-left: auto;
-      background: none;
-      border: none;
-      font-size: 1.25rem;
+    .title-card .meta { font-size: 0.85rem; color: var(--ink-70); margin: 0; }
+    .title-card form { margin-top: auto; padding-top: var(--s2); }
+    .title-card button { width: 100%; }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4em;
+      font-size: 0.78rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 0.32em 0.55em;
+      border: 1px solid currentColor;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+    .chip::before {
+      content: "";
+      width: 0.5em;
+      height: 0.5em;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .chip.ready { color: var(--ok); }
+    .chip.wait  { color: var(--warn); }
+    .chip.plain { color: var(--ink-45); }
+    .chip.plain::before { display: none; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: var(--s1); }
+
+    /* --- controls ------------------------------------------------------- */
+    /* One press behaviour everywhere: the shadow collapses and the control
+       moves into it.  Nothing else on the page animates. */
+    button, .btn {
+      font: inherit;
+      font-weight: 600;
+      color: var(--paper);
+      background: var(--ink);
+      border: 2px solid var(--ink);
+      border-radius: 7px;
+      padding: 0.5rem 0.9rem;
+      box-shadow: 3px 3px 0 rgba(26, 26, 25, 0.18);
       cursor: pointer;
-      color: var(--muted);
-      padding: 0 .25rem;
+      text-decoration: none;
+      display: inline-block;
+      transition: transform 0.06s, box-shadow 0.06s;
+    }
+    button:hover, .btn:hover { background: #2f2e2b; }
+    button:active, .btn:active {
+      transform: translate(3px, 3px);
+      box-shadow: 0 0 0 rgba(26, 26, 25, 0.18);
+    }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .btn-primary:hover { background: #1a5290; }
+    .btn-quiet {
+      background: var(--card);
+      color: var(--ink);
+    }
+    .btn-quiet:hover { background: #f2ebdd; }
+    .btn-danger { background: var(--bad); border-color: var(--bad); }
+    .btn-danger:hover { background: #9d2117; }
+    /* Unbinding a card is reversible, so it gets a caution, not an alarm --
+       but stacked on a phone it sits right under Reassign and must not read
+       as the same routine action. */
+    .btn-caution {
+      background: var(--card);
+      color: var(--bad);
+      border-color: var(--bad);
+    }
+    .btn-caution:hover { background: #fbeceb; }
+    :focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    label {
+      display: inline-flex;
+      flex-direction: column;
+      gap: var(--s1);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--ink-70);
+    }
+    input, select {
+      font: inherit;
+      font-weight: 400;
+      color: var(--ink);
+      background: #fff;
+      border: 2px solid var(--rule);
+      border-radius: 7px;
+      padding: 0.45rem 0.6rem;
+      min-width: 12rem;
+    }
+    input:focus, select:focus { border-color: var(--ink); }
+    .inline-form, .wifi-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--s3);
+      align-items: flex-end;
     }
     .link-button {
       background: none;
       border: none;
+      box-shadow: none;
       padding: 0;
-      font-size: inherit;
-      color: var(--muted);
-      cursor: pointer;
+      font: inherit;
+      color: var(--accent);
       text-decoration: underline;
+      cursor: pointer;
     }
-    .op-overlay-text strong {
-      display: block;
+    .link-button:hover { background: none; }
+    .link-button:active { transform: none; }
+
+    /* --- tables --------------------------------------------------------- */
+    table { width: 100%; border-collapse: collapse; font-size: 0.94rem; }
+    th {
+      text-align: left;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ink-45);
+      border-bottom: 2px solid var(--ink);
+      padding: 0 var(--s2) var(--s1);
     }
-    .op-overlay-text span {
-      color: var(--muted);
-      font-size: .9rem;
+    td {
+      padding: var(--s3) var(--s2);
+      border-bottom: 1px solid var(--rule);
+      vertical-align: middle;
+    }
+    td:first-child, th:first-child { padding-left: 0; }
+    .table-wrap { overflow-x: auto; }
+
+    /* --- messages ------------------------------------------------------- */
+    .flash {
+      border: 2px solid;
+      border-radius: 7px;
+      padding: var(--s3);
+      margin-bottom: var(--s4);
+      font-weight: 500;
+    }
+    .flash.ok    { border-color: var(--ok);  background: #eaf4ed; color: #1d5c37; }
+    .flash.error { border-color: var(--bad); background: #fbeceb; color: #8f1f15; }
+    /* An instruction that is still waiting on the reader -- not a success.
+       Green here would tell a parent the tap already landed. */
+    .flash.wait  { border-color: var(--warn); background: #fbf1dc; color: #77510a; }
+
+    /* --- disclosure groups ---------------------------------------------- */
+    details {
+      border-top: 1px solid var(--rule);
+      padding: var(--s3) 0;
+    }
+    details:last-of-type { border-bottom: 1px solid var(--rule); }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: var(--s2);
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::before {
+      content: "+";
+      font-family: var(--mono);
+      font-size: 1.1em;
+      line-height: 1;
+      width: 1.3em;
+      height: 1.3em;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--ink);
+      border-radius: 5px;
+      flex: none;
+    }
+    details[open] summary::before { content: "\\2212"; }
+    details[open] > *:not(summary) { margin-top: var(--s3); }
+
+    /* --- file browser --------------------------------------------------- */
+    .crumb { font-size: 0.88rem; color: var(--ink-70); margin-bottom: var(--s2); }
+    .file-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .file-list li {
+      border-bottom: 1px solid var(--rule);
+      padding: var(--s2) 0;
+      display: flex;
+      justify-content: space-between;
+      gap: var(--s3);
+    }
+    .file-list a { font-weight: 600; text-decoration: none; }
+    .file-list a:hover { text-decoration: underline; }
+    .file-entry { color: var(--ink-70); }
+    .file-size { flex: none; font-family: var(--mono); font-size: 0.85rem; }
+
+    /* --- waiting screens ------------------------------------------------ */
+    /* First run and the lock screen do the same thing: stand still until a
+       card shows up.  Same drawing as the kiosk, so the gesture is taught the
+       same way on every surface. */
+    .wait-screen {
+      min-height: 60vh;
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      text-align: center;
+      gap: var(--s3);
+    }
+    .wait-screen .card-tap {
+      width: min(15rem, 60vw);
+      color: var(--ink);
+      margin-bottom: var(--s2);
+    }
+    .wait-screen h1 { margin: 0; }
+    .wait-screen p { margin: 0; max-width: 34rem; }
+    .wait-screen .spinner { margin-top: var(--s3); }
+    .wave {
+      transform-box: view-box;
+      transform-origin: 42px 66px;
+      animation: wave 1.9s ease-out infinite;
+    }
+    .wave:nth-of-type(2) { animation-delay: 0.28s; }
+    .wave:nth-of-type(3) { animation-delay: 0.56s; }
+    @keyframes wave {
+      0%   { opacity: 0; transform: scale(0.55); }
+      35%  { opacity: 1; }
+      100% { opacity: 0; transform: scale(1.15); }
+    }
+
+    /* --- progress ------------------------------------------------------- */
+    /* A cartridge loading bar, not a spinning ring: it reads as "the machine
+       is reading something" rather than "a web page is thinking". */
+    .spinner {
+      width: 100%;
+      max-width: 12rem;
+      height: 0.7rem;
+      background: #e7dfd0;
+      border: 2px solid var(--ink);
+      border-radius: 5px;
+      overflow: hidden;
+      position: relative;
+      margin: var(--s3) 0;
+    }
+    .spinner::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 38%;
+      background: var(--ink);
+      animation: load-sweep 1.1s ease-in-out infinite alternate;
+    }
+    @keyframes load-sweep {
+      from { transform: translateX(-8%); }
+      to   { transform: translateX(180%); }
+    }
+    .connecting-box { padding: var(--s4) 0; }
+    .connecting-box .spinner { margin-inline: 0; }
+
+    /* --- the working-on-it bar ------------------------------------------ */
+    .op-overlay {
+      position: fixed;
+      inset: auto 0 0 0;
+      z-index: 99;
+      background: var(--ink);
+      color: var(--paper);
+      padding: var(--s3) var(--s4);
+      display: flex;
+      align-items: center;
+      gap: var(--s4);
+    }
+    .op-overlay[hidden] { display: none; }
+    .op-overlay .spinner {
+      width: 4.5rem;
+      margin: 0;
+      flex: none;
+      background: #3b3934;
+      border-color: var(--paper);
+    }
+    .op-overlay .spinner::after { background: var(--paper); }
+    .op-overlay.error .spinner { display: none; }
+    .op-overlay-text strong { display: block; }
+    .op-overlay-text span { color: #cfc7b8; font-size: 0.9rem; }
+    .op-overlay-dismiss {
+      margin-left: auto;
+      background: none;
+      border: none;
+      box-shadow: none;
+      color: var(--paper);
+      font-size: 1.4rem;
+      line-height: 1;
+      padding: 0 0.25rem;
+      cursor: pointer;
+    }
+    .op-overlay-dismiss:hover { background: none; }
+
+    @media (max-width: 640px) {
+      main { padding: var(--s4) var(--s3) var(--s6); }
+      /* A four-column table does not fit a phone, and a parent standing in a
+         kitchen will not think to scroll a table sideways to reach Disable.
+         Each card becomes its own stacked block instead. */
+      .card-table,
+      .card-table tbody,
+      .card-table tr,
+      .card-table td { display: block; width: 100%; }
+      .card-table thead { display: none; }
+      .card-table tr {
+        border-bottom: 1px solid var(--rule);
+        padding: var(--s3) 0;
+      }
+      .card-table td { border: 0; padding: var(--s1) 0; }
+      .card-table td:first-child { font-weight: 600; }
+      .live { text-align: left; }
+      .inline-form, .wifi-form { flex-direction: column; align-items: stretch; }
+      label, input, select, .inline-form button, .wifi-form button { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner::after { animation: none; width: 100%; opacity: 0.55; }
+      .wave { animation: none; opacity: 1; }
+      button, .btn { transition: none; }
     }
     """).strip()
 
@@ -411,6 +727,11 @@ PARENT_EVENTS_SCRIPT = dedent("""
     var badge = document.getElementById('live-mode');
     var tapBanner = document.getElementById('tap-now-banner');
 
+    var MODE_WORDS = {
+      'first-run': 'not set up yet',
+      'locked': 'locked',
+      'unlocked': 'unlocked',
+    };
     var enrollInProgress = false;
     var overlayPinned = false;  // true while an error is displayed; SSE won't clear it
 
@@ -438,7 +759,7 @@ PARENT_EVENTS_SCRIPT = dedent("""
     const events = new EventSource('/events');
     events.onmessage = (event) => {
       const state = JSON.parse(event.data);
-      if (badge) badge.textContent = state.mode;
+      if (badge) badge.textContent = MODE_WORDS[state.mode] || state.mode;
       if (tapBanner) {
         tapBanner.style.display =
           (state.status && state.status.capture_mode) ? '' : 'none';
@@ -526,170 +847,239 @@ LOCKED_EVENTS_SCRIPT = dedent("""
     """).strip()
 
 KIOSK_CSS = dedent("""
-        :root {
-            color-scheme: light;
-            --paper: #efe7d7;
-            --ink: #102030;
-            --accent: #d95f32;
-            --sun: #f3b94d;
-            --panel: rgba(255, 251, 244, 0.9);
-            --border: rgba(16, 32, 48, 0.12);
-            --shadow: rgba(16, 32, 48, 0.18);
-        }
-        body {
-            margin: 0;
-            min-height: 100vh;
-            font-family: "Avenir Next", "Trebuchet MS", "Gill Sans", sans-serif;
-            color: var(--ink);
-            background:
-                radial-gradient(
-                    circle at top,
-                    rgba(243, 185, 77, 0.45),
-                    transparent 34%
-                ),
-                linear-gradient(180deg, #fff8ec 0%, #f4ead7 100%);
-        }
-        .kiosk-shell {
-            min-height: 100vh;
-            display: grid;
-            place-items: center;
-            padding: 4vw;
-            box-sizing: border-box;
-        }
-        .kiosk-panel {
-            width: min(100%, 1180px);
-            min-height: min(78vh, 820px);
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(260px, 36%);
-            gap: clamp(1.5rem, 4vw, 3rem);
-            align-items: center;
-            padding: clamp(2rem, 5vw, 4rem);
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 36px;
-            box-shadow: 0 30px 80px var(--shadow);
-        }
-        .kiosk-copy {
-            display: grid;
-            gap: 1.25rem;
-            max-width: 44rem;
-        }
-        .kiosk-brand {
-            margin: 0;
-            color: var(--accent);
-            font-size: clamp(1rem, 2vw, 1.4rem);
-            font-weight: 700;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-        }
-        .kiosk-title {
-            margin: 0;
-            font-size: clamp(2.8rem, 7vw, 5.8rem);
-            line-height: 0.95;
-            letter-spacing: -0.04em;
-        }
-        .kiosk-body {
-            margin: 0;
-            font-size: clamp(1.3rem, 2.7vw, 2rem);
-            line-height: 1.35;
-            max-width: 30rem;
-        }
-        .kiosk-art-frame {
-            display: grid;
-            place-items: center;
-            aspect-ratio: 4 / 5;
-            border-radius: 28px;
-            background: linear-gradient(
-                180deg,
-                rgba(243, 185, 77, 0.28),
-                rgba(217, 95, 50, 0.14)
-            );
-            border: 1px solid rgba(217, 95, 50, 0.18);
-            overflow: hidden;
-        }
-        .kiosk-art-frame[hidden] {
-            display: none;
-        }
-        .kiosk-art {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-        .kiosk-spinner {
-            display: none;
-            width: 2.5rem;
-            height: 2.5rem;
-            border: 4px solid rgba(217, 95, 50, 0.2);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        .kiosk-spinner.active {
-            display: block;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        @media (max-width: 900px) {
-            .kiosk-panel {
-                grid-template-columns: minmax(0, 1fr);
-                min-height: auto;
-            }
-            .kiosk-copy,
-            .kiosk-body {
-                max-width: none;
-            }
-        }
-        """).strip()
+    /* Kiosk.  Read from across a room by someone who may not read yet, on a
+       screen with no keyboard and no mouse.  Everything here is big, flat and
+       high contrast, and the whole screen floods with the tapped card's ink --
+       tap the blue card, the room goes blue.  That is the only feedback a
+       pre-reader gets that the machine understood them, so it does the work
+       that a paragraph of text would do for an adult. */
+    :root {
+      color-scheme: light;
+      --paper:    #fbf7ef;
+      --ink:      #1a1a19;
+      --flood:    #fbf7ef;
+      --on-flood: #1a1a19;
+      --sans:     Piboto, system-ui, -apple-system, "Segoe UI",
+                  "Noto Sans", "DejaVu Sans", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--flood);
+      color: var(--on-flood);
+      transition: background-color 420ms ease, color 420ms ease;
+      overflow: hidden;
+    }
+    .kiosk {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      padding: clamp(1.5rem, 4vh, 3rem) clamp(1.5rem, 5vw, 4rem);
+    }
+    .kiosk-stage {
+      width: min(100%, 68rem);
+      margin-inline: auto;
+      display: grid;
+      grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+      align-items: center;
+      justify-content: center;
+      gap: clamp(2rem, 6vw, 5rem);
+      min-height: 0;
+    }
+
+    /* The card itself: ink keyline, hard offset shadow, set down slightly
+       crooked the way a real one lands on a table. */
+    .kiosk-card {
+      position: relative;
+      aspect-ratio: 3 / 4;
+      width: 100%;
+      max-height: 62vh;
+      margin-inline: auto;
+      background: #fffdf8;
+      border: 4px solid var(--ink);
+      border-radius: 18px;
+      box-shadow: 12px 12px 0 rgba(26, 26, 25, 0.22);
+      transform: rotate(-2deg);
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+    }
+    .kiosk-art {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .kiosk-art[hidden] { display: none; }
+    .kiosk-placeholder { display: block; width: 82%; }
+    .kiosk-card.blank .kiosk-placeholder { width: 100%; }
+    .kiosk-placeholder[hidden] { display: none; }
+    .card-tap { width: 100%; height: auto; }
+    /* Nothing to frame until there is art: the outline steps aside so the
+       drawing is the picture rather than a picture of a picture. */
+    .kiosk-card.blank {
+      background: none;
+      border-color: transparent;
+      box-shadow: none;
+      transform: none;
+      aspect-ratio: auto;
+    }
+
+    /* The reader's radio waves pulse outward -- the one animation on the
+       screen, and it is there to show the gesture, not to decorate. */
+    .wave {
+      transform-box: view-box;
+      transform-origin: 42px 66px;
+      animation: wave 1.9s ease-out infinite;
+    }
+    .wave:nth-of-type(2) { animation-delay: 0.28s; }
+    .wave:nth-of-type(3) { animation-delay: 0.56s; }
+    @keyframes wave {
+      0%   { opacity: 0; transform: scale(0.55); }
+      35%  { opacity: 1; }
+      100% { opacity: 0; transform: scale(1.15); }
+    }
+
+    .kiosk-copy { min-width: 0; }
+    .kiosk-title {
+      /* ch resolves against this element's own size, so the measure holds at
+         every step of the clamp instead of guillotining long game titles. */
+      max-width: 13ch;
+      margin: 0 0 clamp(0.5rem, 1.5vh, 1rem);
+      font-size: clamp(2.2rem, 5.2vw, 4.6rem);
+      font-weight: 800;
+      line-height: 1.04;
+      overflow-wrap: break-word;
+      text-wrap: balance;
+    }
+    .kiosk-body {
+      max-width: 24ch;
+      margin: 0;
+      font-size: clamp(1.2rem, 2.2vw, 1.85rem);
+      font-weight: 500;
+      line-height: 1.3;
+      opacity: 0.85;
+    }
+
+    /* Loading bar, styled to match the card: same keyline, same corners. */
+    .kiosk-progress {
+      margin-top: clamp(1rem, 3vh, 2rem);
+      height: 1.4rem;
+      max-width: 20rem;
+      border: 4px solid currentColor;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+      visibility: hidden;
+    }
+    .kiosk-progress.active { visibility: visible; }
+    .kiosk-progress::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 34%;
+      background: currentColor;
+      animation: kiosk-load 1.1s ease-in-out infinite alternate;
+    }
+    @keyframes kiosk-load {
+      from { transform: translateX(-6%); }
+      to   { transform: translateX(200%); }
+    }
+
+    .kiosk-mark {
+      margin: 0;
+      justify-self: center;
+      font-size: clamp(0.8rem, 1.4vw, 1rem);
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      opacity: 0.45;
+    }
+
+    /* Nothing to look at while a game is loading over the top of us. */
+    @media (max-width: 900px), (max-height: 560px) {
+      .kiosk-stage { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+      .kiosk-card { max-width: 15rem; max-height: 34vh; }
+      .kiosk-copy { text-align: center; }
+      .kiosk-title, .kiosk-body { max-width: 26ch; margin-inline: auto; }
+      .kiosk-progress { margin-inline: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body { transition: none; }
+      .wave { animation: none; opacity: 1; }
+      .kiosk-progress::after { animation: none; width: 100%; }
+    }
+    """).strip()
 
 KIOSK_EVENTS_SCRIPT = dedent("""
+    const shell = document.getElementById('kiosk');
     const title = document.getElementById('kiosk-title');
     const body = document.getElementById('kiosk-body');
-        const artFrame = document.getElementById('kiosk-art-frame');
-        const art = document.getElementById('kiosk-art');
-        const spinner = document.getElementById('kiosk-spinner');
+    const card = document.getElementById('kiosk-card');
+    const art = document.getElementById('kiosk-art');
+    const placeholder = document.getElementById('kiosk-placeholder');
+    const progress = document.getElementById('kiosk-spinner');
+    const root = document.documentElement;
     const events = new EventSource('/events');
 
-        const BUSY_KINDS = new Set(['loading', 'enroll']);
+    const BUSY_KINDS = new Set(['loading', 'enroll']);
+    const PAPER = '#fbf7ef';
+    const INK = '#1a1a19';
 
-        const applyKioskState = (kiosk) => {
-            if (!kiosk) {
-                return;
-            }
-            title.textContent = kiosk.title;
-            body.textContent = kiosk.body;
-            if (spinner) {
-                spinner.classList.toggle('active', BUSY_KINDS.has(kiosk.kind));
-            }
-            if (artFrame && art) {
-                if (kiosk.art) {
-                    art.src = kiosk.art;
-                    art.alt = kiosk.title;
-                    artFrame.hidden = false;
-                } else {
-                    art.removeAttribute('src');
-                    art.alt = '';
-                    artFrame.hidden = true;
-                }
-            }
-        };
+    const applyKioskState = (kiosk) => {
+        if (!kiosk) {
+            return;
+        }
+        title.textContent = kiosk.title;
+        body.textContent = kiosk.body;
+        shell.dataset.kind = kiosk.kind || 'idle';
+
+        // Flood the screen with the tapped card's ink.  Falling back to paper
+        // means an unknown or idle state simply calms down instead of
+        // freezing on the last game's color.
+        root.style.setProperty('--flood', kiosk.ink || PAPER);
+        root.style.setProperty('--on-flood', kiosk.on_ink || INK);
+
+        if (progress) {
+            progress.classList.toggle('active', BUSY_KINDS.has(kiosk.kind));
+        }
+        // With no art there is nothing to frame, so the card outline gets out
+        // of the way and the drawing stands on its own.
+        if (kiosk.art) {
+            art.src = kiosk.art;
+            art.alt = kiosk.title;
+            art.hidden = false;
+            placeholder.hidden = true;
+            card.classList.remove('blank');
+        } else {
+            art.removeAttribute('src');
+            art.alt = '';
+            art.hidden = true;
+            placeholder.hidden = false;
+            card.classList.add('blank');
+        }
+    };
 
     events.onmessage = (event) => {
-      const state = JSON.parse(event.data);
-            applyKioskState(state.kiosk);
-            if (state.mode === 'unlocked') {
-                events.close();
-                window.location.replace('/');
-            }
-        };
+        const state = JSON.parse(event.data);
+        applyKioskState(state.kiosk);
+        if (state.mode === 'unlocked') {
+            events.close();
+            window.location.replace('/');
+        }
+    };
 
-        events.onerror = () => {
-            applyKioskState({
-                title: 'Reconnecting to ChipBit',
-                body: 'Trying to reconnect. Hold tight.',
-            });
+    events.onerror = () => {
+        applyKioskState({
+            kind: 'loading',
+            title: 'Reconnecting to ChipBit',
+            body: 'Just a moment.',
+        });
     };
     """).strip()
+
 
 WIFI_SCAN_SCRIPT = dedent("""
     (function () {
@@ -940,22 +1330,25 @@ class WebApp:
         return self._layout("ChipBit Parent Console", body, include_events=True)
 
     def render_kiosk(self) -> str:
-        body = dedent("""
-            <main class="kiosk-shell">
-              <section class="kiosk-panel">
-                <section class="kiosk-copy">
-                  <p class="kiosk-brand">ChipBit</p>
+        body = dedent(f"""
+            <main class="kiosk" id="kiosk" data-kind="idle">
+              <div class="kiosk-stage">
+                <div class="kiosk-card blank" id="kiosk-card">
+                  <img class="kiosk-art" id="kiosk-art" alt="" hidden
+                       onerror="this.src='/art/default';this.onerror=null;" />
+                  <span class="kiosk-placeholder" id="kiosk-placeholder">
+                    {CARD_TAP_SVG}
+                  </span>
+                </div>
+                <div class="kiosk-copy">
                   <h1 class="kiosk-title" id="kiosk-title">Tap a card</h1>
                   <p class="kiosk-body" id="kiosk-body">
-                    Waiting for a game card, Home card, or admin card.
+                    Hold a card against the reader to start playing.
                   </p>
-                  <div class="kiosk-spinner" id="kiosk-spinner"></div>
-                </section>
-                <section class="kiosk-art-frame" id="kiosk-art-frame" hidden>
-                  <img class="kiosk-art" id="kiosk-art" alt=""
-                       onerror="this.src='/art/default';this.onerror=null;" />
-                </section>
-              </section>
+                  <div class="kiosk-progress" id="kiosk-spinner"></div>
+                </div>
+              </div>
+              <p class="kiosk-mark">ChipBit</p>
             </main>
             """).strip()
         return self._kiosk_layout(body)
@@ -1044,6 +1437,7 @@ class WebApp:
                 title=title.label,
                 message=f"Preparing {title.label}",
                 art=title.art,
+                title_id=title.id,
             )
             try:
                 for event in enroll_card(
@@ -1060,6 +1454,7 @@ class WebApp:
                         title=title.label,
                         message=event.message,
                         art=title.art,
+                        title_id=title.id,
                     )
             finally:
                 self._clear_operation_state()
@@ -1194,13 +1589,13 @@ class WebApp:
               <style>{PAGE_CSS}</style>
             </head>
             <body>
+              <header class="site-header">
+                <p class="site-title">{CHIPBIT_MARK}ChipBit setup</p>
+              </header>
               <main>
-                <header class="site-header">
-                  <h1 class="site-title">ChipBit Setup</h1>
-                </header>
                 {flash}
-                <section class="panel panel-wide">
-                  <h2>Wi-Fi Country</h2>
+                <section class="block">
+                  <h1>Wi-Fi country</h1>
                   <p>
                     Choose the country where this ChipBit is being used.
                     This sets the Wi-Fi radio channels available on your network.
@@ -1213,7 +1608,9 @@ class WebApp:
                         {options}
                       </select>
                     </label>
-                    <button type="submit">Set country and reboot</button>
+                    <button type="submit" class="btn-primary">
+                      Set country and reboot
+                    </button>
                   </form>
                 </section>
               </main>
@@ -1234,12 +1631,12 @@ class WebApp:
               <style>__PAGE_CSS__</style>
             </head>
             <body>
+              <header class="site-header">
+                <p class="site-title">__CHIPBIT_MARK__ChipBit setup</p>
+              </header>
               <main>
-                <header class="site-header">
-                  <h1 class="site-title">ChipBit Setup</h1>
-                </header>
-                <section class="panel panel-wide">
-                  <h2>Rebooting…</h2>
+                <section class="block">
+                  <h1>Rebooting…</h1>
                   <p>Applying Wi-Fi country settings and rebooting.
                      This page will reload automatically in about 20 seconds.</p>
                   <div class="connecting-box">
@@ -1249,7 +1646,8 @@ class WebApp:
               </main>
             </body>
             </html>
-        """.replace("__PAGE_CSS__", PAGE_CSS)).strip()
+        """.replace("__PAGE_CSS__", PAGE_CSS)
+           .replace("__CHIPBIT_MARK__", CHIPBIT_MARK)).strip()
 
     def apply_wifi_country(self, country: str) -> None:
         """Save the country code and immediately apply regulatory settings."""
@@ -1280,13 +1678,13 @@ class WebApp:
               <style>{PAGE_CSS}</style>
             </head>
             <body>
+              <header class="site-header">
+                <p class="site-title">{CHIPBIT_MARK}ChipBit setup</p>
+              </header>
               <main>
-                <header class="site-header">
-                  <h1 class="site-title">ChipBit Setup</h1>
-                </header>
                 {flash}
-                <section class="panel panel-wide">
-                  <h2>Connect to Wi-Fi</h2>
+                <section class="block">
+                  <h1>Connect to Wi-Fi</h1>
                   <p>
                     Some activities (like Marble, KStars, and SuperTux) download and
                     install when a card is first enrolled. They need an internet
@@ -1309,7 +1707,9 @@ class WebApp:
                     <label>Password
                       <input type="password" name="password" />
                     </label>
-                    <button type="submit">Connect and continue</button>
+                    <button type="submit" class="btn-primary">
+                      Connect and continue
+                    </button>
                   </form>
                   <div id="wifi-connecting" class="connecting-box" hidden>
                     <div class="spinner"></div>
@@ -1507,17 +1907,20 @@ class WebApp:
         drive_list = "\n".join(items)
 
         section = dedent(f"""
-            <section class="panel">
-              <p class="eyebrow"><a href="/">&#8592; Parent Console</a></p>
+            <section class="block">
+              <p class="crumb"><a href="/">&#8592; Parent console</a></p>
               <h1>Game files</h1>
-              <p class="muted">Browse a drive and copy game data to <code>/games/</code>.</p>
+              <p class="lede">
+                Find a game folder on a USB drive and copy it into
+                <code>/games/</code>.
+              </p>
             </section>
-            <section class="panel panel-wide">
+            <section class="block">
               <h2>Drives</h2>
-              <p><a href="/files">Rescan</a></p>
               <ul class="file-list">
                 {drive_list}
               </ul>
+              <p class="small"><a href="/files">Rescan</a></p>
             </section>
             """).strip()
 
@@ -1569,7 +1972,7 @@ class WebApp:
         # Copy-this-folder form (copies the current directory)
         suggested = p.name.lower().replace(" ", "-")
         copy_form = dedent(f"""
-            <section class="panel panel-wide">
+            <section class="block">
               <h2>Copy this folder to /games/</h2>
               <form method="post" action="/files/copy" class="wifi-form">
                 <input type="hidden" name="source" value="{escape(str(p))}" />
@@ -1627,12 +2030,12 @@ class WebApp:
         listing = "\n".join(rows) if rows else "<li><em>Empty folder</em></li>"
 
         section = dedent(f"""
-            <section class="panel">
-              <p class="eyebrow">{breadcrumb}</p>
+            <section class="block">
+              <p class="crumb">{breadcrumb}</p>
               <h1>{escape(p.name)}</h1>
             </section>
             {copy_form}
-            <section class="panel panel-wide">
+            <section class="block">
               <h2>Contents</h2>
               {up_link}
               <ul class="file-list">
@@ -1684,17 +2087,19 @@ class WebApp:
             return self._layout(
                 "Copy — ChipBit",
                 self._flash(None, "Unknown copy job — it may have already completed.")
-                + '<section class="panel"><p><a href="/files">Back to drives</a></p></section>',
+                + '<section class="block"><p><a href="/files">Back to drives</a></p></section>',
                 include_events=False,
             )
 
         if not job["done"]:
             status_url = f"/files/copy/status?job={quote(job_id)}"
             body = dedent(f"""
-                <section class="panel panel-wide">
+                <section class="block">
                   <h2>Copying&hellip;</h2>
                   <div class="spinner"></div>
-                  <p class="muted">This may take a minute for large game data.</p>
+                  <p class="muted">
+                    Large games can take a few minutes. Leave this page open.
+                  </p>
                 </section>
                 """).strip()
             return self._layout(
@@ -1715,7 +2120,7 @@ class WebApp:
             return self._layout(
                 "Copy failed — ChipBit",
                 self._flash(None, job["error"])
-                + f'<section class="panel"><p><a href="{escape(back_url)}">Back</a></p></section>',
+                + f'<section class="block"><p><a href="{escape(back_url)}">Back</a></p></section>',
                 include_events=False,
             )
 
@@ -1735,7 +2140,7 @@ class WebApp:
         # Redirect immediately via meta-refresh — no JS needed.
         return self._layout(
             "Done — ChipBit",
-            '<section class="panel"><p>Copy complete. Taking you to the card form&hellip;</p></section>',
+            '<section class="block"><p>Copy complete. Taking you to the card form&hellip;</p></section>',
             include_events=False,
             head_extra=f'<meta http-equiv="refresh" content="0; url=/?{escape(qs)}" />',
         )
@@ -1958,14 +2363,20 @@ class WebApp:
         message: str | None,
         error: str | None,
     ) -> str:
-        section = dedent("""
-            <section class="panel panel-wide">
-              <p class="eyebrow">First Run</p>
+        section = dedent(f"""
+            <section class="wait-screen">
+              {CARD_TAP_SVG}
               <h1>Make this card the admin card</h1>
-              <p>
-                Hold any card to the reader now. No button needed — this page
-                will update automatically when the card is registered.
+              <p class="lede">
+                Pick one card and keep it somewhere the kids can't reach
+                \u2014 it's the key to this page. Hold it against the reader
+                now.
               </p>
+              <p class="muted small">
+                Nothing to click. This page updates by itself once the reader
+                sees the card.
+              </p>
+              <div class="spinner"></div>
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -1978,26 +2389,29 @@ class WebApp:
         error: str | None,
     ) -> str:
         current = escape(str(status.get("current") or ""))
-        playing = f"<p>Now playing: <strong>{current}</strong></p>" if current else ""
+        playing = (
+            f'<p class="muted small">Playing right now: <strong>{current}</strong></p>'
+            if current else ""
+        )
         section = dedent(f"""
-            <section class="panel panel-wide">
-              <p class="eyebrow">Parent Controls</p>
+            <section class="wait-screen">
+              {CARD_TAP_SVG}
               <h1>Tap your admin card to unlock</h1>
-              <p>
-                Hold the card you registered as admin to the reader.
-                This page will update automatically.
+              <p class="lede">
+                Hold the card you set aside against the reader. This page
+                updates by itself.
               </p>
               {playing}
-              <p class="muted" style="margin-top:1.5rem">
-                <a href="/debug">Diagnostics</a>
-                &nbsp;·&nbsp;
-                <a href="/setup">WiFi setup</a>
-                &nbsp;·&nbsp;
-                <form method="post" action="/settings/shutdown" style="display:inline">
-                  <button type="submit" class="link-button">Shut down</button>
-                </form>
-              </p>
+              <div class="spinner"></div>
             </section>
+            <hr class="rule" />
+            <div class="row small muted" style="justify-content:center">
+              <a href="/debug">Diagnostics</a>
+              <a href="/setup">Wi-Fi setup</a>
+              <form method="post" action="/settings/shutdown">
+                <button type="submit" class="link-button">Shut down</button>
+              </form>
+            </div>
             """).strip()
         return f"{self._flash(message, error)}{section}"
 
@@ -2023,7 +2437,11 @@ class WebApp:
             for uid, card in sorted(cards.title_cards.items())
         )
         if not card_rows:
-            card_rows = '<tr><td colspan="4">No game cards enrolled yet.</td></tr>'
+            card_rows = (
+                '<tr><td colspan="4" class="muted">'
+                "Nothing bound yet \u2014 pick a title above and tap a "
+                "blank card.</td></tr>"
+            )
 
         admin_uid = escape(cards.system_cards["unlock"].uid)
         section = dedent(f"""
@@ -2033,10 +2451,12 @@ class WebApp:
                 <strong id="op-overlay-title"></strong>
                 <span id="op-overlay-msg"></span>
               </div>
-              <button id="op-overlay-dismiss" class="op-overlay-dismiss" type="button" hidden title="Dismiss">&times;</button>
+              <button id="op-overlay-dismiss" class="op-overlay-dismiss"
+                      type="button" hidden title="Dismiss">&times;</button>
             </div>
-            <div id="tap-now-banner" class="flash ok" style="display:none">
-              Hold your card to the reader now — waiting up to 30 seconds.
+            <div id="tap-now-banner" class="flash wait" style="display:none">
+              Hold the card against the reader now \u2014 waiting up to
+              30 seconds.
             </div>
             <script>
               function exitAdmin() {{
@@ -2044,43 +2464,63 @@ class WebApp:
                   .then(() => location.replace('/kiosk'));
               }}
             </script>
-            <section class="panel">
-              <p class="eyebrow">Parent Console</p>
+
+            <section class="block">
               <h1>Game cards</h1>
-              <p class="muted">Admin card UID: <code>{admin_uid}</code></p>
-              <button type="button" onclick="exitAdmin()">← Back to play mode</button>
+              <p class="lede">
+                Pick a title, hold a blank card against the reader, and that
+                card launches the title from then on. The color on each tile
+                is the one the screen turns when your child taps it.
+              </p>
+              <p class="row">
+                <button type="button" class="btn-primary" onclick="exitAdmin()">
+                  Back to play mode
+                </button>
+                <span class="small muted">
+                  Admin card <span class="uid">{admin_uid}</span>
+                </span>
+              </p>
             </section>
-            <section class="catalog-grid">{title_rows}</section>
-            <section class="panel panel-wide">
-              <h2>Enrolled cards</h2>
-              <table>
-                <thead>
-                  <tr>
-                    <th>UID</th>
-                    <th>Title</th>
-                    <th>Reassign</th>
-                    <th>Disable</th>
-                  </tr>
-                </thead>
-                <tbody>{card_rows}</tbody>
-              </table>
+
+            <section class="block">
+              <div class="catalog-grid">{title_rows}</div>
             </section>
-            <section class="panel panel-wide">
+
+            <section class="block">
+              <h2>Cards you've made</h2>
+              <div class="table-wrap">
+                <table class="card-table">
+                  <thead>
+                    <tr>
+                      <th>Card</th>
+                      <th>Launches</th>
+                      <th>Change</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>{card_rows}</tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="block">
               <h2>Game files</h2>
-              <p class="muted">Copy game data from a USB drive to <code>/games/</code>
-                so ScummVM, DOSBox, and Ruffle titles can find it.</p>
-              <a href="/files">Open file browser →</a>
-            </section>
-            <section class="panel panel-wide">
-              <h2>Add a custom card</h2>
               <p class="muted">
-                Create cards for software you own or websites you'd
-                like your child to visit.
-                After saving, use "Tap card to enroll" in the grid
-                above to assign an RFID card.
+                Copy game data from a USB drive into <code>/games/</code> so
+                ScummVM, DOSBox, and Ruffle titles can find it.
+              </p>
+              <p><a class="btn btn-quiet" href="/files">Open the file browser</a></p>
+            </section>
+
+            <section class="block">
+              <h2>Add your own</h2>
+              <p class="muted">
+                Cards for software you own or a website you'd like your child
+                to visit. Save it here first, then bind a card to it from the
+                tiles above.
               </p>
               <details id="custom-web">
-                <summary>Add a website</summary>
+                <summary>A website</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="web" />
                   <label>Name
@@ -2093,7 +2533,7 @@ class WebApp:
                 </form>
               </details>
               <details id="custom-exec">
-                <summary>Add an installed app</summary>
+                <summary>An app already installed on the Pi</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="exec" />
                   <label>Name
@@ -2109,7 +2549,7 @@ class WebApp:
                 </form>
               </details>
               <details id="custom-scummvm">
-                <summary>Add a ScummVM game (you supply game data)</summary>
+                <summary>A ScummVM game (you supply the game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="scummvm" />
                   <label>Name
@@ -2120,14 +2560,14 @@ class WebApp:
                     <input type="text" name="game_id" placeholder="monkey" required />
                   </label>
                   <label>
-                    Data folder under /games/ (leave blank for scummvm/&lt;name&gt;)
+                    Data folder under /games/ (blank for scummvm/&lt;name&gt;)
                     <input type="text" name="data_dir" placeholder="scummvm/monkey" />
                   </label>
                   <button type="submit">Save ScummVM card</button>
                 </form>
               </details>
               <details id="custom-dosbox">
-                <summary>Add a DOSBox game (you supply game data)</summary>
+                <summary>A DOSBox game (you supply the game data)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="dosbox" />
                   <label>Name
@@ -2142,7 +2582,7 @@ class WebApp:
                 </form>
               </details>
               <details id="custom-ruffle">
-                <summary>Add a Flash/Ruffle game (you supply the .swf)</summary>
+                <summary>A Flash game (you supply the .swf)</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="ruffle" />
                   <label>Name
@@ -2174,13 +2614,14 @@ class WebApp:
                 history.replaceState({{}}, '', '/');
               }})();
             </script>
-            <section class="panel panel-wide">
+
+            <section class="block">
               <h2>Settings</h2>
               <h3>Wi-Fi</h3>
               <form method="post" action="/wifi/connect" class="wifi-form">
                 <label>Network
                   <select id="ssid-select" name="ssid" required>
-                    <option value="" disabled selected>Scanning…</option>
+                    <option value="" disabled selected>Scanning\u2026</option>
                   </select>
                 </label>
                 <div id="ssid-manual-row" hidden>
@@ -2195,29 +2636,37 @@ class WebApp:
                 <button type="submit">Connect</button>
               </form>
               <script>{WIFI_SCAN_SCRIPT}</script>
-              <p class="muted"><a href="/debug">Diagnostics</a></p>
+
               <h3>Keyboard layout</h3>
               <form method="post" action="/settings/keyboard" class="inline-form">
-                <select name="layout">
-                  <option value="us">US (QWERTY)</option>
-                  <option value="gb">UK (QWERTY)</option>
-                  <option value="de">German (QWERTZ)</option>
-                  <option value="fr">French (AZERTY)</option>
-                  <option value="es">Spanish</option>
-                  <option value="it">Italian</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="nl">Dutch</option>
-                </select>
-                <button type="submit">Apply keyboard layout</button>
+                <label>Layout
+                  <select name="layout">
+                    <option value="us">US (QWERTY)</option>
+                    <option value="gb">UK (QWERTY)</option>
+                    <option value="de">German (QWERTZ)</option>
+                    <option value="fr">French (AZERTY)</option>
+                    <option value="es">Spanish</option>
+                    <option value="it">Italian</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="nl">Dutch</option>
+                  </select>
+                </label>
+                <button type="submit">Apply</button>
               </form>
-              <h3>System</h3>
-              <form method="post" action="/settings/lock" class="inline-form">
-                <button type="submit">Lock parent controls</button>
-              </form>
-              <form method="post" action="/settings/shutdown" class="inline-form"
-                    onsubmit="return confirm('Shut down the Pi now?')">
-                <button type="submit">Shut down</button>
-              </form>
+
+              <h3>This Pi</h3>
+              <div class="row">
+                <form method="post" action="/settings/lock">
+                  <button type="submit" class="btn-quiet">
+                    Lock parent controls
+                  </button>
+                </form>
+                <form method="post" action="/settings/shutdown"
+                      onsubmit="return confirm('Shut down the Pi now?')">
+                  <button type="submit" class="btn-danger">Shut down</button>
+                </form>
+                <a class="small" href="/debug">Diagnostics</a>
+              </div>
             </section>
             """).strip()
         return f"{self._flash(message, error)}{section}"
@@ -2228,21 +2677,42 @@ class WebApp:
         catalog: Catalog,
         bindings_by_title: dict[str, list[str]],
     ) -> str:
-        summary = escape(self._title_summary(title, catalog))
         raw_state = self._title_state(title, catalog)
-        state = escape(raw_state)
-        bound_cards = ", ".join(sorted(bindings_by_title.get(title.id, [])))
-        bound_cards = escape(bound_cards or "none")
+        # Readiness is the one thing a parent scans this grid for, so it gets a
+        # colored chip; the plumbing detail below it stays quiet text.
+        chip_class = {
+            "Ready": "ready",
+            "Needs game files": "wait",
+            "Downloads on first use": "wait",
+        }.get(raw_state, "plain")
+        ink, _ = ink_for(title.id)
+        uids = sorted(bindings_by_title.get(title.id, []))
+        if uids:
+            chips = "".join(
+                f'<span class="chip plain">{escape(uid)}</span>' for uid in uids
+            )
+            bound = f'<div class="chip-row">{chips}</div>'
+        else:
+            bound = '<p class="meta">No card yet</p>'
         action = quote(title.id)
+        blurb = escape(title.blurb) if title.blurb else escape(
+            self._title_summary(title, catalog)
+        )
         return dedent(f"""
-            <article class="title-card">
-              <h2>{escape(title.label)}</h2>
-              <p>{summary}</p>
-              <p class="muted">{state}</p>
-              <p class="muted">Bound cards: {bound_cards}</p>
-              <form method="post" action="/titles/{action}/enroll" class="enroll-form">
-                <button type="submit">Tap card to enroll</button>
-              </form>
+            <article class="title-card" style="--tile-ink: {ink}">
+              <div class="band"></div>
+              <div class="body">
+                <h2>{escape(title.label)}</h2>
+                <p class="meta">{blurb}</p>
+                <p><span class="chip {chip_class}">{escape(raw_state)}</span></p>
+                {bound}
+                <form method="post" action="/titles/{action}/enroll"
+                      class="enroll-form">
+                  <button type="submit" class="btn-quiet">
+                    Tap a card to bind
+                  </button>
+                </form>
+              </div>
             </article>
             """).strip()
 
@@ -2259,7 +2729,7 @@ class WebApp:
         quoted_uid = quote(uid)
         return dedent(f"""
             <tr>
-              <td>{escape(uid)}</td>
+              <td><span class="uid">{escape(uid)}</span></td>
               <td>{escape(title_id)}</td>
               <td>
                 <form
@@ -2267,8 +2737,10 @@ class WebApp:
                   action="/cards/{quoted_uid}/reassign"
                   class="inline-form"
                 >
-                  <select name="title_id">{options}</select>
-                  <button type="submit">Reassign</button>
+                  <select name="title_id" aria-label="Title for card {escape(uid)}">
+                    {options}
+                  </select>
+                  <button type="submit" class="btn-quiet">Reassign</button>
                 </form>
               </td>
               <td>
@@ -2276,8 +2748,9 @@ class WebApp:
                   method="post"
                   action="/cards/{quoted_uid}/remove"
                   class="inline-form"
+                  onsubmit="return confirm('Stop this card launching anything?')"
                 >
-                  <button type="submit">Disable</button>
+                  <button type="submit" class="btn-caution">Disable</button>
                 </form>
               </td>
             </tr>
@@ -2305,13 +2778,17 @@ class WebApp:
         return f"Ruffle content under {games_root}"
 
     def _title_state(self, title: CatalogTitle, catalog: Catalog) -> str:
+        """One line a parent can act on: can I bind a card to this right now?
+
+        Whether a title is bundled, installs on demand, or is waiting on files
+        the parent has to supply is an implementation detail everywhere except
+        here, where it decides whether tapping a card will work.
+        """
         if title.data == "required":
             ready = self._required_data_ready(title, catalog)
-            return "Data ready" if ready else "Needs parent-supplied data"
+            return "Ready" if ready else "Needs game files"
         if title.install:
-            return "Installs on enroll"
-        if title.bundled:
-            return "Bundled in the image"
+            return "Downloads on first use"
         return "Ready"
 
     def _kiosk_state(
@@ -2321,11 +2798,11 @@ class WebApp:
         operation: dict[str, str] | None,
     ) -> dict[str, str]:
         if status.get("capture_mode") is True:
-            return {
+            return self._kiosk_flood({
                 "kind": "enroll",
                 "title": "Tap a card now",
-                "body": "Enrollment is armed.",
-            }
+                "body": "This card is about to become a game card.",
+            }, "enroll")
 
         if "unlock" not in cards.system_cards:
             return {
@@ -2335,45 +2812,62 @@ class WebApp:
             }
 
         if operation is not None:
-            return {
+            state = {
                 "kind": operation["kind"],
                 "title": operation["title"],
                 "body": operation["message"],
                 **({"art": operation["art"]} if "art" in operation else {}),
             }
+            return self._kiosk_flood(state, operation.get("id") or operation["title"])
 
         current = status.get("current")
         if status.get("running") is True and isinstance(current, str) and current:
+            current_art = status.get("current_art")
+            current_id = status.get("current_id")
             kiosk = {
                 "kind": "loading",
                 "title": current,
-                "body": "Launching now.",
+                "body": "Getting it ready\u2026",
+                "art": (
+                    current_art if isinstance(current_art, str) and current_art
+                    else "/art/default"
+                ),
             }
-            current_art = status.get("current_art")
-            kiosk["art"] = (
-                current_art if isinstance(current_art, str) and current_art
-                else "/art/default"
+            return self._kiosk_flood(
+                kiosk,
+                current_id if isinstance(current_id, str) and current_id else current,
             )
-            return kiosk
 
         last_event = status.get("last_event")
         if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
+            # A kid is holding a card that does nothing.  Say who can fix it,
+            # not what went wrong -- and keep the UID for the grown-up.
             uid = last_event.get("uid", "")
             body = (
-                f"Card {uid} is not set up yet. Enroll it in the parent console."
-                if uid else "That card is not set up yet."
+                f"This card isn't set up yet. Card {uid} can be added in the "
+                "parent console."
+                if uid else "This card isn't set up yet."
             )
             return {
                 "kind": "unknown-card",
                 "title": "Ask a grown-up",
                 "body": body,
+                "ink": "#f0b429",
+                "on_ink": "#1a1a19",
             }
 
         return {
             "kind": "idle",
             "title": "Tap a card",
-            "body": "Waiting for a game card, Home card, or admin card.",
+            "body": "Hold a card against the reader to start playing.",
         }
+
+    def _kiosk_flood(self, state: dict[str, str], key: str) -> dict[str, str]:
+        """Attach the card ink that the kiosk screen floods with."""
+        ink, on_ink = ink_for(key)
+        state["ink"] = ink
+        state["on_ink"] = on_ink
+        return state
 
     def _required_data_ready(self, title: CatalogTitle, catalog: Catalog) -> bool:
         cache_key = (
@@ -2413,6 +2907,7 @@ class WebApp:
         title: str,
         message: str,
         art: str | None,
+        title_id: str | None = None,
     ) -> None:
         operation = {
             "kind": "loading",
@@ -2421,6 +2916,10 @@ class WebApp:
         }
         if art:
             operation["art"] = art
+        if title_id:
+            # Carried so the kiosk floods with the same ink the console
+            # tile uses for this title.
+            operation["id"] = title_id
         with self._operation_lock:
             self._operation = operation
 
@@ -2444,6 +2943,15 @@ class WebApp:
         if script_body:
             script_tag = f"<script>\n{script_body}\n</script>"
 
+        live = ""
+        if include_events:
+            live = dedent("""
+                <p class="live">
+                  Parent controls: <strong id="live-mode">checking\u2026</strong>
+                  <span id="live-detail"></span>
+                </p>
+                """).strip()
+
         return dedent(f"""<!doctype html>
             <html lang="en">
             <head>
@@ -2456,20 +2964,11 @@ class WebApp:
               </style>
             </head>
             <body>
+              <header class="site-header">
+                <p class="wordmark"><a href="/">{CHIPBIT_MARK}ChipBit</a></p>
+                {live}
+              </header>
               <main>
-                <header>
-                  <div>
-                    <p class="eyebrow">ChipBit</p>
-                    <h1>{escape(title)}</h1>
-                  </div>
-                                    <div>
-                                        <p>
-                                            Live mode:
-                                            <strong id="live-mode">loading</strong>
-                                        </p>
-                                        <p class="muted" id="live-detail"></p>
-                                    </div>
-                </header>
                 {body}
               </main>
               {script_tag}

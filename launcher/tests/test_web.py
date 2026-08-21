@@ -248,26 +248,42 @@ system:
             }
             unknown = read_sse_payload(f"{web_url}/events")
 
+    # Idle and first-run stay on paper; every other state carries the ink the
+    # kiosk floods the screen with.
     assert idle["kiosk"] == {
         "kind": "idle",
         "title": "Tap a card",
-        "body": "Waiting for a game card, Home card, or admin card.",
+        "body": "Hold a card against the reader to start playing.",
     }
+
+    enroll_ink, enroll_on_ink = web_module.ink_for("enroll")
     assert enroll["kiosk"] == {
         "kind": "enroll",
         "title": "Tap a card now",
-        "body": "Enrollment is armed.",
+        "body": "This card is about to become a game card.",
+        "ink": enroll_ink,
+        "on_ink": enroll_on_ink,
     }
+
+    # No current_id from this daemon, so the ink falls back to the label.
+    loading_ink, loading_on_ink = web_module.ink_for("Demo App")
     assert loading["kiosk"] == {
         "kind": "loading",
         "title": "Demo App",
-        "body": "Launching now.",
+        "body": "Getting it ready\u2026",
         "art": "/art/demo-app.png",
+        "ink": loading_ink,
+        "on_ink": loading_on_ink,
     }
     assert unknown["kiosk"] == {
         "kind": "unknown-card",
         "title": "Ask a grown-up",
-        "body": "Card DEADBEEF is not set up yet. Enroll it in the parent console.",
+        "body": (
+            "This card isn't set up yet. Card DEADBEEF can be added in the "
+            "parent console."
+        ),
+        "ink": "#f0b429",
+        "on_ink": "#1a1a19",
     }
 
 
@@ -345,12 +361,17 @@ titles:
         "title": "Marble",
         "message": "Installing Marble via apt",
         "art": "/art/marble.png",
+        # Carried so the kiosk can flood with this title's card ink.
+        "id": "marble",
     }
+    marble_ink, marble_on_ink = web_module.ink_for("marble")
     assert payload["kiosk"] == {
         "kind": "loading",
         "title": "Marble",
         "body": "Installing Marble via apt",
         "art": "/art/marble.png",
+        "ink": marble_ink,
+        "on_ink": marble_on_ink,
     }
     assert responses == [responses[0]]
 
