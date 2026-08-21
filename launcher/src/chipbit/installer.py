@@ -292,10 +292,12 @@ def _data_missing_hint(title: CatalogTitle, games_root: Path) -> None:
     """Raise a DataMissingError with a human-readable hint about what to check."""
     content_path = resolve_title_content_path(title, games_root)
     if content_path is None or not content_path.exists():
+        expected = games_root / (
+            title.data_dir or ("scummvm/" + (title.game_id or title.id))
+        )
         raise DataMissingError(
             f"Game data folder not found. Copy your game files to "
-            f"{games_root / (title.data_dir or ('scummvm/' + (title.game_id or title.id)))} "
-            f"and try again."
+            f"{expected} and try again."
         )
     if title.type == "scummvm" and title.game_id:
         raise DataMissingError(
@@ -304,7 +306,8 @@ def _data_missing_hint(title: CatalogTitle, games_root: Path) -> None:
             f"(run \"{title.game_id}\" through scummvm --list-games to verify)."
         )
     raise DataMissingError(
-        f"Required data for \"{title.label}\" is missing or not recognised in {content_path}."
+        f"Required data for \"{title.label}\" is missing or not recognised "
+        f"in {content_path}."
     )
 
 

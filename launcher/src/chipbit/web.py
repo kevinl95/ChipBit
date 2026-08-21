@@ -116,7 +116,10 @@ def _find_dos_executable(game_dir: Path) -> str | None:
         for f in game_dir.iterdir():
             if not f.is_file():
                 continue
-            if f.suffix.lower() in (".exe", ".com", ".bat") and f.name.lower() not in _DOS_SKIP_EXES:
+            if (
+                f.suffix.lower() in (".exe", ".com", ".bat")
+                and f.name.lower() not in _DOS_SKIP_EXES
+            ):
                 candidates.append(f.name.upper())
     except OSError:
         return None
@@ -801,7 +804,11 @@ PARENT_EVENTS_SCRIPT = dedent("""
               window.location.replace('/');
             } else {
               overlayPinned = true;
-              showOverlay('Enrollment failed', data.error || 'Something went wrong.', true);
+              showOverlay(
+                'Enrollment failed',
+                data.error || 'Something went wrong.',
+                true
+              );
               if (btn) {
                 btn.disabled = false;
                 btn.textContent = 'Try again';
@@ -1859,7 +1866,10 @@ class WebApp:
         save_user_title(self.user_catalog_path, title)
         self._clear_readiness_cache()
         self.control.reload()
-        return f'Added “{label}” — use “Tap card to enroll” in the grid above to assign a card'
+        return (
+            f'Added “{label}” — use “Tap a card to bind” on its tile above '
+            "to assign a card"
+        )
 
     def _unique_title_id(self, slug: str) -> str:
         catalog = self._load_catalog()
@@ -1967,7 +1977,7 @@ class WebApp:
         if str(parent).startswith(str(_MEDIA_ROOT) + "/"):
             up_link = f'<p><a href="/files/browse?p={quote(str(parent))}">[up]</a></p>'
         else:
-            up_link = f'<p><a href="/files">[up — drives]</a></p>'
+            up_link = '<p><a href="/files">[up — drives]</a></p>'
 
         # Copy-this-folder form (copies the current directory)
         suggested = p.name.lower().replace(" ", "-")
@@ -2087,13 +2097,14 @@ class WebApp:
             return self._layout(
                 "Copy — ChipBit",
                 self._flash(None, "Unknown copy job — it may have already completed.")
-                + '<section class="block"><p><a href="/files">Back to drives</a></p></section>',
+                + '<section class="block"><p>'
+                + '<a href="/files">Back to drives</a></p></section>',
                 include_events=False,
             )
 
         if not job["done"]:
             status_url = f"/files/copy/status?job={quote(job_id)}"
-            body = dedent(f"""
+            body = dedent("""
                 <section class="block">
                   <h2>Copying&hellip;</h2>
                   <div class="spinner"></div>
@@ -2106,7 +2117,10 @@ class WebApp:
                 "Copying… — ChipBit",
                 body,
                 include_events=False,
-                head_extra=f'<meta http-equiv="refresh" content="2; url={escape(status_url)}" />',
+                head_extra=(
+                    '<meta http-equiv="refresh" '
+                    f'content="2; url={escape(status_url)}" />'
+                ),
             )
 
         with self._copy_jobs_lock:
@@ -2120,7 +2134,8 @@ class WebApp:
             return self._layout(
                 "Copy failed — ChipBit",
                 self._flash(None, job["error"])
-                + f'<section class="block"><p><a href="{escape(back_url)}">Back</a></p></section>',
+                + '<section class="block"><p>'
+                + f'<a href="{escape(back_url)}">Back</a></p></section>',
                 include_events=False,
             )
 
@@ -2140,7 +2155,8 @@ class WebApp:
         # Redirect immediately via meta-refresh — no JS needed.
         return self._layout(
             "Done — ChipBit",
-            '<section class="block"><p>Copy complete. Taking you to the card form&hellip;</p></section>',
+            '<section class="block"><p>Copy complete. '
+            "Taking you to the card form&hellip;</p></section>",
             include_events=False,
             head_extra=f'<meta http-equiv="refresh" content="0; url=/?{escape(qs)}" />',
         )
@@ -2160,7 +2176,10 @@ class WebApp:
         """Return (device_path, label) for removable/optical devices not yet mounted."""
         try:
             result = self.runner(
-                ["lsblk", "-J", "-p", "-o", "NAME,LABEL,FSTYPE,MOUNTPOINT,TYPE,HOTPLUG"],
+                [
+                    "lsblk", "-J", "-p",
+                    "-o", "NAME,LABEL,FSTYPE,MOUNTPOINT,TYPE,HOTPLUG",
+                ],
                 check=False, capture_output=True, text=True,
             )
             if result.returncode != 0:
@@ -2268,13 +2287,17 @@ class WebApp:
         os.sync()
         return f"Copied {source.name} → /games/{dest_rel}"
 
-    def _guess_prefill(self, dest_rel: str, games_root: Path | None = None) -> dict[str, str]:
+    def _guess_prefill(
+        self, dest_rel: str, games_root: Path | None = None
+    ) -> dict[str, str]:
         """Return form prefill hints based on the destination path."""
         p = Path(dest_rel)
         label = p.name.replace("-", " ").replace("_", " ").title()
         parts = p.parts
         if parts and parts[0] == "scummvm":
-            pf: dict[str, str] = {"type": "scummvm", "data_dir": dest_rel, "label": label}
+            pf: dict[str, str] = {
+                "type": "scummvm", "data_dir": dest_rel, "label": label,
+            }
             if games_root is not None:
                 game_id = self._detect_scummvm_game_id(games_root / dest_rel)
                 if game_id:
@@ -2292,7 +2315,9 @@ class WebApp:
             if games_root is not None and not dest_rel.lower().endswith(".swf"):
                 target = games_root / dest_rel
                 if target.is_dir():
-                    inner = sorted(f for f in target.rglob("*") if f.suffix.lower() == ".swf")
+                    inner = sorted(
+                        f for f in target.rglob("*") if f.suffix.lower() == ".swf"
+                    )
                     if inner:
                         try:
                             swf_path = str(inner[0].relative_to(games_root))
@@ -2320,7 +2345,10 @@ class WebApp:
         return None
 
     def _generate_dosbox_conf(self, game_dir: Path, dest_rel: str) -> str | None:
-        """Write a minimal dosbox.conf next to game_dir; return conf path relative to games_root."""
+        """Write a minimal dosbox.conf next to game_dir.
+
+        Returns the conf path relative to games_root.
+        """
         exe = _find_dos_executable(game_dir)
         conf_path = game_dir.parent / (game_dir.name + ".conf")
         conf_rel = str(Path(dest_rel).parent / (game_dir.name + ".conf"))
@@ -3153,7 +3181,11 @@ def create_web_server(
             # (file:// is blocked by Ruffle's own runtime guard).
             if path.startswith("/swf/"):
                 rel = unquote(path[len("/swf/"):])
-                if not rel or ".." in rel.split("/") or not rel.lower().endswith(".swf"):
+                if (
+                    not rel
+                    or ".." in rel.split("/")
+                    or not rel.lower().endswith(".swf")
+                ):
                     self.send_response(403)
                     self.end_headers()
                     return
@@ -3163,7 +3195,9 @@ def create_web_server(
                     self.end_headers()
                     return
                 if not resolved.exists():
-                    log.warning("SWF not found: %s (games_root=%s)", resolved, games_root)
+                    log.warning(
+                        "SWF not found: %s (games_root=%s)", resolved, games_root
+                    )
                     self.send_response(404)
                     self.end_headers()
                     return
