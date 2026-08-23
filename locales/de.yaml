@@ -1,0 +1,221 @@
+# ChipBit — Deutsch
+#
+# HOW TO TRANSLATE
+#   Copy this file to <code>.yaml (e.g. fr.yaml) and translate the values on
+#   the right of each colon.  Leave the keys on the left exactly as they are.
+#
+#   You do NOT have to finish.  Any key you leave out falls back to English,
+#   so a file with ten lines in it is a useful contribution and will not leave
+#   a hole in a screen.
+#
+#   To see your work: put the file in /var/lib/chipbit/locales/ on a running
+#   ChipBit and restart the service, or on any computer run
+#       chipbit-web --locale de --locales-dir ./locales
+#   and open http://127.0.0.1:8080/ — it will print how many strings you have
+#   translated and how many are still falling back to English.
+#
+# RULES
+#   * {uid}, {label}, {title} are filled in at runtime.  Keep them spelled
+#     exactly like that; you may move them within the sentence.
+#   * Some values contain HTML like <code>/games/</code>.  Keep the tags and
+#     translate the words around them.
+#   * /games/ is a real folder on the device.  Never translate a path.
+#   * "ChipBit" is a product name and is never translated.
+
+# ---------------------------------------------------------------------------
+# START HERE.  These twelve strings are everything a child ever sees.
+# Translate only this block and a child who reads no English gets a machine
+# that speaks to them, even while the parent console is still in English.
+# ---------------------------------------------------------------------------
+kiosk.idle.title: "Karte auflegen"
+kiosk.idle.body: "Halte eine Karte an das Lesegerät, um zu spielen."
+kiosk.enroll.title: "Jetzt Karte auflegen"
+kiosk.enroll.body: "Diese Karte wird gleich zu einer Spielkarte."
+kiosk.first_run.title: "Karte auflegen, um sie zur Admin-Karte zu machen"
+kiosk.first_run.body: "Für die Ersteinrichtung wird kein Netzwerk benötigt."
+kiosk.loading.body: "Wird vorbereitet …"
+kiosk.unknown.title: "Frag einen Erwachsenen"
+kiosk.unknown.body: "Diese Karte ist noch nicht eingerichtet."
+kiosk.unknown.body_uid: >-
+  Diese Karte ist noch nicht eingerichtet. Karte {uid} kann in der
+  Elternkonsole hinzugefügt werden.
+kiosk.offline.title: "Verbinde neu mit ChipBit"
+kiosk.offline.body: "Einen Moment."
+
+# ---------------------------------------------------------------------------
+# Everything below is the parent console.  Nice to have, not urgent.
+# ---------------------------------------------------------------------------
+common.diagnostics: "Diagnose"
+common.shutdown: "Herunterfahren"
+common.wifi_setup: "WLAN-Einrichtung"
+common.scanning: "Suche läuft …"
+common.back: "Zurück"
+common.network: "Netzwerk"
+common.network_name: "Netzwerkname"
+common.password: "Passwort"
+common.name: "Name"
+
+layout.parent_controls: "Elternsteuerung:"
+layout.checking: "wird geprüft …"
+layout.mode.first-run: "noch nicht eingerichtet"
+layout.mode.locked: "gesperrt"
+layout.mode.unlocked: "entsperrt"
+
+firstrun.heading: "Diese Karte zur Admin-Karte machen"
+firstrun.lede: >-
+  Wähle eine Karte und bewahre sie außerhalb der Reichweite der Kinder auf —
+  sie ist der Schlüssel zu dieser Seite. Halte sie jetzt an das Lesegerät.
+firstrun.note: >-
+  Nichts zu klicken. Diese Seite aktualisiert sich von selbst, sobald das
+  Lesegerät die Karte erkennt.
+
+lock.heading: "Admin-Karte auflegen zum Entsperren"
+lock.lede: >-
+  Halte die beiseitegelegte Karte an das Lesegerät. Diese Seite aktualisiert
+  sich von selbst.
+lock.playing: "Läuft gerade:"
+
+console.heading: "Spielkarten"
+console.lede: >-
+  Wähle einen Titel, halte eine leere Karte an das Lesegerät, und diese Karte
+  startet ab sofort den Titel. Die Farbe auf jeder Kachel ist die Farbe, die
+  der Bildschirm annimmt, wenn dein Kind sie auflegt.
+console.back_to_play: "Zurück zum Spielmodus"
+console.admin_card: "Admin-Karte"
+console.tap_banner: >-
+  Halte die Karte jetzt an das Lesegerät — es wird bis zu 30 Sekunden
+  gewartet.
+console.tile.bind: "Karte zuweisen"
+console.tile.no_card: "Noch keine Karte"
+console.state.ready: "Bereit"
+console.state.needs_files: "Benötigt Spieldateien"
+console.state.downloads: "Lädt beim ersten Start"
+
+console.cards.heading: "Deine Karten"
+console.cards.col_card: "Karte"
+console.cards.col_launches: "Startet"
+console.cards.col_change: "Ändern"
+console.cards.empty: >-
+  Noch nichts zugewiesen — wähle oben einen Titel und lege eine leere Karte
+  auf.
+console.cards.reassign: "Neu zuweisen"
+console.cards.reassign_label: "Titel für Karte {uid}"
+console.cards.disable: "Deaktivieren"
+console.cards.disable_confirm: "Soll diese Karte nichts mehr starten?"
+
+console.files.heading: "Spieldateien"
+console.files.body: >-
+  Kopiere Spieldaten von einem USB-Stick nach <code>/games/</code>, damit
+  ScummVM-, DOSBox- und Ruffle-Titel sie finden.
+console.files.open: "Dateibrowser öffnen"
+
+console.custom.heading: "Eigene hinzufügen"
+console.custom.body: >-
+  Karten für Software, die dir gehört, oder für eine Website, die dein Kind
+  besuchen soll. Zuerst hier speichern, dann über die Kacheln oben eine Karte
+  zuweisen.
+console.custom.web.summary: "Eine Website"
+console.custom.web.url: "URL"
+console.custom.web.save: "Website-Karte speichern"
+console.custom.exec.summary: "Eine bereits auf dem Pi installierte App"
+console.custom.exec.cmd: "Startbefehl"
+console.custom.exec.apt: "Zu installierendes apt-Paket (optional)"
+console.custom.exec.save: "App-Karte speichern"
+console.custom.scummvm.summary: "Ein ScummVM-Spiel (Spieldaten stellst du bereit)"
+console.custom.scummvm.game_id: "ScummVM-Spiel-ID"
+console.custom.scummvm.data_dir: >-
+  Datenordner unter /games/ (leer lassen für scummvm/&lt;name&gt;)
+console.custom.scummvm.save: "ScummVM-Karte speichern"
+console.custom.dosbox.summary: "Ein DOSBox-Spiel (Spieldaten stellst du bereit)"
+console.custom.dosbox.conf: "Pfad der DOSBox-Konfigurationsdatei unter /games/"
+console.custom.dosbox.save: "DOSBox-Karte speichern"
+console.custom.ruffle.summary: "Ein Flash-Spiel (.swf stellst du bereit)"
+console.custom.ruffle.swf: "Pfad der .swf-Datei unter /games/"
+console.custom.ruffle.save: "Ruffle-Karte speichern"
+
+console.settings.heading: "Einstellungen"
+console.settings.language: "Sprache"
+console.settings.wifi: "WLAN"
+console.settings.connect: "Verbinden"
+console.settings.keyboard: "Tastaturbelegung"
+console.settings.layout: "Belegung"
+console.settings.apply: "Übernehmen"
+console.settings.this_pi: "Dieser Pi"
+console.settings.lock: "Elternsteuerung sperren"
+console.settings.shutdown_confirm: "Den Pi jetzt herunterfahren?"
+
+keyboard.us: "US (QWERTY)"
+keyboard.gb: "UK (QWERTY)"
+keyboard.de: "Deutsch (QWERTZ)"
+keyboard.fr: "Französisch (AZERTY)"
+keyboard.es: "Spanisch"
+keyboard.it: "Italienisch"
+keyboard.pt: "Portugiesisch"
+keyboard.nl: "Niederländisch"
+
+files.crumb_back: "← Elternkonsole"
+files.heading: "Spieldateien"
+files.lede: >-
+  Suche einen Spielordner auf einem USB-Stick und kopiere ihn nach
+  <code>/games/</code>.
+files.drives: "Laufwerke"
+files.rescan: "Erneut suchen"
+files.none: "Keine Laufwerke gefunden. Stecke ein Laufwerk ein und klicke auf Erneut suchen."
+files.mount: "Einbinden: {label}"
+files.copy_heading: "Diesen Ordner nach /games/ kopieren"
+files.copy_type: "Spieltyp"
+files.copy_type.scummvm: "ScummVM"
+files.copy_type.dosbox: "DOSBox"
+files.copy_type.flash: "Flash / Ruffle"
+files.copy_type.other: "Andere"
+files.copy_dest: "Ziel in /games/"
+files.copy_button: "Ordner kopieren"
+files.contents: "Inhalt"
+files.up: "[hoch]"
+files.up_drives: "[hoch — Laufwerke]"
+files.empty: "Leerer Ordner"
+files.back_to_drives: "Zurück zu den Laufwerken"
+
+copy.heading: "Wird kopiert …"
+copy.body: "Große Spiele können ein paar Minuten dauern. Lass diese Seite offen."
+copy.unknown_job: "Unbekannter Kopiervorgang — er ist vielleicht schon fertig."
+copy.done: "Kopieren abgeschlossen. Weiter zum Kartenformular …"
+
+setup.title: "ChipBit Einrichtung"
+setup.country.heading: "WLAN-Land"
+setup.country.body: >-
+  Wähle das Land, in dem dieser ChipBit verwendet wird. Das legt fest, welche
+  WLAN-Funkkanäle in deinem Netzwerk verfügbar sind. Das Gerät startet einmal
+  neu, um die Einstellung zu übernehmen.
+setup.country.label: "Land"
+setup.country.placeholder: "Land auswählen …"
+setup.country.submit: "Land setzen und neu starten"
+setup.reboot.heading: "Neustart …"
+setup.reboot.body: >-
+  WLAN-Ländereinstellungen werden übernommen, das Gerät startet neu. Diese
+  Seite lädt in etwa 20 Sekunden automatisch neu.
+setup.wifi.heading: "Mit WLAN verbinden"
+setup.wifi.body: >-
+  Einige Aktivitäten (etwa Marble, KStars und SuperTux) werden beim ersten
+  Zuweisen einer Karte heruntergeladen und installiert. Dafür ist beim ersten
+  Mal eine Internetverbindung nötig. Du kannst das überspringen und dich
+  später in den Einstellungen verbinden.
+setup.wifi.submit: "Verbinden und fortfahren"
+setup.wifi.connecting: "Verbinde …"
+setup.wifi.skip: "Überspringen — ich verbinde später"
+
+js.enrolling.title: "Wird zugewiesen …"
+js.enrolling.body: "Halte die Karte jetzt an das Lesegerät"
+js.waiting_button: "Warte auf Karte …"
+js.failed.title: "Zuweisung fehlgeschlagen"
+js.failed.body: "Etwas ist schiefgelaufen."
+js.try_again: "Erneut versuchen"
+js.working: "Arbeite …"
+
+# Note: msg.added quotes the enroll button by name, so it must match
+# console.tile.bind above. If you rename one, rename the other.
+msg.language_set: "Sprache aktualisiert."
+msg.bound: "{uid} mit {title} verknüpft"
+msg.added: >-
+  „{label}“ hinzugefügt — verwende „Karte zuweisen“ auf der Kachel oben, um
+  eine Karte zuzuweisen

@@ -27,6 +27,7 @@ from .models import (
     resolve_title_content_path,
     save_cards,
 )
+from .strings import child_locale_env, generated_locales, read_language
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ class LauncherService:
         getpgid: Callable[[int], int] = os.getpgid,
         thread_factory: Callable[..., threading.Thread] | None = threading.Thread,
         monotonic: Callable[[], float] = time.monotonic,
+        language_path: Path | None = None,
     ) -> None:
         self.config = config
         self.settings = settings or LaunchSettings()
@@ -153,6 +155,8 @@ class LauncherService:
         self._getpgid = getpgid
         self._thread_factory = thread_factory
         self._monotonic = monotonic
+        self._generated_locales: frozenset[str] | None = None
+        self._language_path = language_path
 
         self._lock = threading.RLock()
         self._current_process: object | None = None
@@ -282,6 +286,25 @@ class LauncherService:
                 and self._current_process.poll() is None
             )
 
+    def _child_env(self) -> dict[str, str]:
+        """Environment for a launched title, including its language.
+
+        Read per launch rather than cached at startup so a parent changing the
+        language in the console takes effect on the next card tap, with no
+        service restart.  The generated-locale list is cached, since that only
+        changes when a locale is installed.
+        """
+        env = dict(os.environ)
+        if self._generated_locales is None:
+            self._generated_locales = generated_locales()
+        env.update(
+            child_locale_env(
+                read_language(self._language_path),
+                generated=self._generated_locales,
+            )
+        )
+        return env
+
     def status(self) -> dict[str, object]:
         """Return daemon state for the control API and kiosk shell."""
         with self._lock:
@@ -331,7 +354,9 @@ class LauncherService:
                 log.warning("could not create user_dir %s: %s", rel, exc)
 
         try:
-            process = self._popen_factory(argv, start_new_session=True)
+            process = self._popen_factory(
+                argv, start_new_session=True, env=self._child_env()
+            )
         except (OSError, ValueError) as exc:
             log.error("launch failed for %s: %s", title.label, exc)
             return

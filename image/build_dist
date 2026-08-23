@@ -33,6 +33,23 @@ python3 -m pip wheel "${DIR}/../launcher" --no-deps --no-build-isolation \
     -w "${WHEEL_DIR}" -q
 echo "Wheel ready: $(ls "${WHEEL_DIR}"/chipbit-*.whl)"
 
+# ---------------------------------------------------------------------------
+# Pre-step: stage the UI translations into the overlay.  locales/ at the repo
+# root is the single source of truth -- a translator should never have to find
+# a path six directories deep -- so it is copied in here rather than kept in
+# two places that can drift.
+# ---------------------------------------------------------------------------
+LOCALES_SRC="${DIR}/../locales"
+LOCALES_DST="${WHEEL_DIR}/locales"
+rm -rf "${LOCALES_DST}"
+if compgen -G "${LOCALES_SRC}"/*.yaml > /dev/null; then
+    mkdir -p "${LOCALES_DST}"
+    cp "${LOCALES_SRC}"/*.yaml "${LOCALES_DST}/"
+    echo "Locales staged: $(ls "${LOCALES_DST}" | tr '\n' ' ')"
+else
+    echo "No locales to stage (English only)"
+fi
+
 export DIST_PATH="${DIR}"
 export CUSTOM_PI_OS_PATH="$(<"${CUSTOMPIOS_PATH_FILE}")"
 export PATH="$PATH:${CUSTOM_PI_OS_PATH}"

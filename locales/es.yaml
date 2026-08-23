@@ -1,0 +1,217 @@
+# ChipBit — Español
+#
+# DRAFT. Written by ChipBit's maintainers, not by a native speaker. The
+# grammar should be sound, but register — especially the wording aimed at
+# young children — needs a native reader. Corrections very welcome; this file
+# exists to be easier to fix than to write from scratch.
+#
+# This is neutral/European Spanish. If you want a Latin American variant,
+# copy this to es_MX.yaml (or similar) rather than editing this file.
+#
+# HOW TO TRANSLATE
+#   Copy this file to <code>.yaml and translate the values to the right of
+#   each colon. Leave the keys on the left exactly as they are. You do NOT
+#   have to finish — anything you leave out falls back to English.
+#
+#   To preview your work, on any computer:
+#       chipbit-web --locale es --locales-dir ./locales
+#   or drop the file into /var/lib/chipbit/locales/ on a running ChipBit and
+#   restart the service. Startup prints how many strings you have translated.
+#
+# RULES
+#   * {uid}, {label}, {title} are filled in at runtime. Keep them spelled
+#     exactly like that; you may move them within the sentence.
+#   * Some values contain HTML like <code>/games/</code>. Keep the tags.
+#   * /games/ is a real folder on the device. Never translate a path.
+#   * "ChipBit" is a product name and is never translated.
+
+# ---------------------------------------------------------------------------
+# START HERE. These twelve strings are everything a child ever sees.
+# ---------------------------------------------------------------------------
+kiosk.idle.title: "Pon una tarjeta"
+kiosk.idle.body: "Acerca una tarjeta al lector para jugar."
+kiosk.enroll.title: "Pon una tarjeta ahora"
+kiosk.enroll.body: "Esta tarjeta va a convertirse en una tarjeta de juego."
+kiosk.first_run.title: "Pon una tarjeta para convertirla en la tarjeta admin"
+kiosk.first_run.body: "No hace falta red para la configuración inicial."
+kiosk.loading.body: "Preparándolo…"
+kiosk.unknown.title: "Pregunta a un adulto"
+kiosk.unknown.body: "Esta tarjeta aún no está configurada."
+kiosk.unknown.body_uid: >-
+  Esta tarjeta aún no está configurada. La tarjeta {uid} se puede añadir en la
+  consola de padres.
+kiosk.offline.title: "Reconectando con ChipBit"
+kiosk.offline.body: "Un momento."
+
+# ---------------------------------------------------------------------------
+# Parent console. Nice to have, not urgent.
+# ---------------------------------------------------------------------------
+common.diagnostics: "Diagnóstico"
+common.shutdown: "Apagar"
+common.wifi_setup: "Configuración de Wi-Fi"
+common.scanning: "Buscando…"
+common.back: "Volver"
+common.network: "Red"
+common.network_name: "Nombre de la red"
+common.password: "Contraseña"
+common.name: "Nombre"
+
+layout.parent_controls: "Controles parentales:"
+layout.checking: "comprobando…"
+layout.mode.first-run: "sin configurar"
+layout.mode.locked: "bloqueado"
+layout.mode.unlocked: "desbloqueado"
+
+firstrun.heading: "Convertir esta tarjeta en la tarjeta admin"
+firstrun.lede: >-
+  Elige una tarjeta y guárdala donde los niños no lleguen: es la llave de esta
+  página. Acércala al lector ahora.
+firstrun.note: >-
+  No hay nada que pulsar. Esta página se actualiza sola en cuanto el lector
+  vea la tarjeta.
+
+lock.heading: "Pon tu tarjeta admin para desbloquear"
+lock.lede: >-
+  Acerca al lector la tarjeta que guardaste. Esta página se actualiza sola.
+lock.playing: "Ahora mismo:"
+
+console.heading: "Tarjetas de juego"
+console.lede: >-
+  Elige un título, acerca una tarjeta en blanco al lector y esa tarjeta abrirá
+  ese título a partir de ahora. El color de cada ficha es el color que toma la
+  pantalla cuando tu hijo o hija la pone.
+console.back_to_play: "Volver al modo de juego"
+console.admin_card: "Tarjeta admin"
+console.tap_banner: >-
+  Acerca la tarjeta al lector ahora: se esperará hasta 30 segundos.
+console.tile.bind: "Asociar una tarjeta"
+console.tile.no_card: "Aún sin tarjeta"
+console.state.ready: "Listo"
+console.state.needs_files: "Faltan archivos del juego"
+console.state.downloads: "Se descarga al primer uso"
+
+console.cards.heading: "Tus tarjetas"
+console.cards.col_card: "Tarjeta"
+console.cards.col_launches: "Abre"
+console.cards.col_change: "Cambiar"
+console.cards.empty: >-
+  Aún no hay nada asociado: elige un título arriba y pon una tarjeta en
+  blanco.
+console.cards.reassign: "Reasignar"
+console.cards.reassign_label: "Título para la tarjeta {uid}"
+console.cards.disable: "Desactivar"
+console.cards.disable_confirm: "¿Desactivar esta tarjeta para que no abra nada?"
+
+console.files.heading: "Archivos de juego"
+console.files.body: >-
+  Copia los datos del juego desde una unidad USB a <code>/games/</code> para
+  que los títulos de ScummVM, DOSBox y Ruffle puedan encontrarlos.
+console.files.open: "Abrir el explorador de archivos"
+
+console.custom.heading: "Añade los tuyos"
+console.custom.body: >-
+  Tarjetas para programas que tengas o una página web que quieras que visite
+  tu hijo o hija. Guárdala aquí primero y luego asóciale una tarjeta desde las
+  fichas de arriba.
+console.custom.web.summary: "Una página web"
+console.custom.web.url: "URL"
+console.custom.web.save: "Guardar tarjeta de web"
+console.custom.exec.summary: "Una aplicación ya instalada en la Pi"
+console.custom.exec.cmd: "Comando de inicio"
+console.custom.exec.apt: "Paquete apt a instalar (opcional)"
+console.custom.exec.save: "Guardar tarjeta de aplicación"
+console.custom.scummvm.summary: "Un juego de ScummVM (tú aportas los datos)"
+console.custom.scummvm.game_id: "ID de juego de ScummVM"
+console.custom.scummvm.data_dir: >-
+  Carpeta de datos en /games/ (vacío para scummvm/&lt;nombre&gt;)
+console.custom.scummvm.save: "Guardar tarjeta de ScummVM"
+console.custom.dosbox.summary: "Un juego de DOSBox (tú aportas los datos)"
+console.custom.dosbox.conf: "Ruta del archivo de configuración de DOSBox en /games/"
+console.custom.dosbox.save: "Guardar tarjeta de DOSBox"
+console.custom.ruffle.summary: "Un juego Flash (tú aportas el .swf)"
+console.custom.ruffle.swf: "Ruta del .swf en /games/"
+console.custom.ruffle.save: "Guardar tarjeta de Ruffle"
+
+console.settings.heading: "Ajustes"
+console.settings.language: "Idioma"
+console.settings.wifi: "Wi-Fi"
+console.settings.connect: "Conectar"
+console.settings.keyboard: "Distribución del teclado"
+console.settings.layout: "Distribución"
+console.settings.apply: "Aplicar"
+console.settings.this_pi: "Esta Pi"
+console.settings.lock: "Bloquear los controles parentales"
+console.settings.shutdown_confirm: "¿Apagar la Pi ahora?"
+
+keyboard.us: "EE. UU. (QWERTY)"
+keyboard.gb: "Reino Unido (QWERTY)"
+keyboard.de: "Alemán (QWERTZ)"
+keyboard.fr: "Francés (AZERTY)"
+keyboard.es: "Español"
+keyboard.it: "Italiano"
+keyboard.pt: "Portugués"
+keyboard.nl: "Neerlandés"
+
+files.crumb_back: "← Consola de padres"
+files.heading: "Archivos de juego"
+files.lede: >-
+  Busca una carpeta de juego en una unidad USB y cópiala en
+  <code>/games/</code>.
+files.drives: "Unidades"
+files.rescan: "Volver a buscar"
+files.none: "No se han detectado unidades. Conecta una y pulsa Volver a buscar."
+files.mount: "Montar: {label}"
+files.copy_heading: "Copiar esta carpeta a /games/"
+files.copy_type: "Tipo de juego"
+files.copy_type.scummvm: "ScummVM"
+files.copy_type.dosbox: "DOSBox"
+files.copy_type.flash: "Flash / Ruffle"
+files.copy_type.other: "Otro"
+files.copy_dest: "Destino en /games/"
+files.copy_button: "Copiar carpeta"
+files.contents: "Contenido"
+files.up: "[arriba]"
+files.up_drives: "[arriba — unidades]"
+files.empty: "Carpeta vacía"
+files.back_to_drives: "Volver a las unidades"
+
+copy.heading: "Copiando…"
+copy.body: "Los juegos grandes pueden tardar unos minutos. Deja esta página abierta."
+copy.unknown_job: "Tarea de copia desconocida: puede que ya haya terminado."
+copy.done: "Copia completada. Te llevamos al formulario de la tarjeta…"
+
+setup.title: "Configuración de ChipBit"
+setup.country.heading: "País del Wi-Fi"
+setup.country.body: >-
+  Elige el país donde se usa este ChipBit. Esto define los canales de radio
+  Wi-Fi disponibles en tu red. El dispositivo se reiniciará una vez para
+  aplicar el ajuste.
+setup.country.label: "País"
+setup.country.placeholder: "Selecciona un país…"
+setup.country.submit: "Definir el país y reiniciar"
+setup.reboot.heading: "Reiniciando…"
+setup.reboot.body: >-
+  Aplicando los ajustes del país del Wi-Fi y reiniciando. Esta página se
+  recargará automáticamente en unos 20 segundos.
+setup.wifi.heading: "Conectar al Wi-Fi"
+setup.wifi.body: >-
+  Algunas actividades (como Marble, KStars y SuperTux) se descargan e instalan
+  la primera vez que se asocia una tarjeta. Necesitan conexión a internet esa
+  primera vez. Puedes omitir este paso y conectarte más tarde en Ajustes.
+setup.wifi.submit: "Conectar y continuar"
+setup.wifi.connecting: "Conectando…"
+setup.wifi.skip: "Omitir: me conectaré más tarde"
+
+js.enrolling.title: "Asociando…"
+js.enrolling.body: "Acerca tu tarjeta al lector ahora"
+js.waiting_button: "Esperando la tarjeta…"
+js.failed.title: "Error al asociar"
+js.failed.body: "Algo ha salido mal."
+js.try_again: "Reintentar"
+js.working: "Trabajando…"
+
+msg.language_set: "Idioma actualizado."
+msg.bound: "{uid} asociada a {title}"
+msg.added: >-
+  «{label}» añadido: usa «Asociar una tarjeta» en su ficha de arriba para
+  asignarle una tarjeta

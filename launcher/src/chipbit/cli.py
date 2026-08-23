@@ -25,6 +25,7 @@ from .launcher import (
 )
 from .models import ConfigLoadError, load_cards, load_catalog_merged
 from .reader import EvdevReader, MockReader, find_rfid_reader, pump_reader
+from .strings import load_locale, read_language
 from .web import create_web_server
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cards", type=Path, default=Path("cards.yaml"))
     parser.add_argument("--user-catalog", type=Path, default=None)
     parser.add_argument("--reader-device")
+    parser.add_argument(
+        "--language-file",
+        type=Path,
+        default=None,
+        help="File holding the parent's language choice (for launched titles).",
+    )
     parser.add_argument(
         "--mock-reader",
         nargs="?",
@@ -101,6 +108,7 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
 
     service = LauncherService(
         config,
+        language_path=args.language_file,
         settings=LaunchSettings(
             while_running=args.while_running,
             stop_grace_secs=args.stop_grace_secs,
@@ -167,6 +175,30 @@ def web_main(
     parser.add_argument("--control-url", default="http://127.0.0.1:8765")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
+        "--locale",
+        default=None,
+        metavar="CODE",
+        help="UI language, e.g. de. Omit for English.",
+    )
+    parser.add_argument(
+        "--language-file",
+        type=Path,
+        default=None,
+        help="File holding the parent's language choice.",
+    )
+    parser.add_argument(
+        "--locales-dir",
+        type=Path,
+        action="append",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory of <code>.yaml locale files; repeatable, later wins. "
+            "Defaults to the system and user locale directories. Point this "
+            "at a checkout to preview a translation before installing it."
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -177,6 +209,16 @@ def web_main(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+    locale_dirs = tuple(args.locales_dir) if args.locales_dir else None
+    # --locale is the translator's override; otherwise honour whatever the
+    # parent picked in the console, which the launcher reads from the same file.
+    language = args.locale or read_language(args.language_file)
+    if language != "en":
+        report = load_locale(language, locale_dirs)
+        # Logged at INFO so a translator sees their coverage on every start
+        # without having to go looking for it.
+        log.info("locale %s", report.summary())
 
     try:
         load_catalog_merged(args.catalog, args.user_catalog)
@@ -192,6 +234,8 @@ def web_main(
         cards_path=args.cards,
         control_base_url=args.control_url,
         user_catalog_path=args.user_catalog,
+        language_path=args.language_file,
+        locale_dirs=locale_dirs,
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

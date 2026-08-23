@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 import subprocess
 import sys
@@ -24,7 +25,47 @@ from .models import (
 DEFAULT_FLATPAK_REMOTE: Final[str] = "flathub"
 _ALLOWED_INSTALL_MANAGERS: Final[frozenset[str]] = frozenset({"apt", "flatpak", "pip"})
 
+log = logging.getLogger(__name__)
+
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+# --- apt invocation hardening ---------------------------------------------
+#
+# Two things went wrong together on a Pi that dropped off Wi-Fi mid-enrollment:
+#
+# 1. The image ships /etc/apt/apt.conf.d/99-chipbit-build with a *build*
+#    retry budget (60s per connection, 3 retries).  That is right for a
+#    CustomPiOS build racing a mirror sync and badly wrong at runtime, where a
+#    child is watching a loading screen: one dead network meant apt sat there
+#    for minutes.  These options override it per-invocation, so a parent's own
+#    apt use and the build config are both left alone.
+_APT_FAIL_FAST = (
+    "-o", "Acquire::http::Timeout=15",
+    "-o", "Acquire::https::Timeout=15",
+    "-o", "Acquire::Retries=1",
+)
+
+# 2. When Python's own timeout fired it SIGKILLed our direct child -- which is
+#    `sudo`, not apt.  SIGKILL cannot be forwarded, so apt-get was orphaned,
+#    kept running, and kept /var/lib/apt/lists/lock.  Every later enrollment
+#    then died with "Could not get lock ... held by process N" until reboot.
+#    timeout(1) runs the command in its own process group and signals the
+#    group with SIGTERM, so apt actually exits and releases the lock.
+_APT_UPDATE_SECS = 90
+_APT_INSTALL_SECS = 540
+_APT_KILL_AFTER_SECS = 10
+
+
+def _under_timeout(seconds: int, argv: tuple[str, ...]) -> list[str]:
+    """Wrap argv in coreutils timeout(1) so the whole group gets SIGTERM."""
+    return [
+        "timeout",
+        "--signal=TERM",
+        f"--kill-after={_APT_KILL_AFTER_SECS}",
+        str(seconds),
+        *argv,
+    ]
+
 NetworkChecker = Callable[[], bool]
 DataChecker = Callable[[CatalogTitle, Path], bool]
 
@@ -143,8 +184,10 @@ def ensure_install_spec_installed(
             )
             if update_result.returncode != 0:
                 detail = (update_result.stderr + "\n" + update_result.stdout).strip()
+                log.warning("%s package list update failed: %s", manager_name, detail)
                 raise InstallationError(
-                    f"{manager_name} package list update failed: "
+                    _apt_failure_hint(detail)
+                    or f"{manager_name} package list update failed: "
                     f"{detail or 'unknown error'}"
                 )
 
@@ -158,8 +201,13 @@ def ensure_install_spec_installed(
         )
         if install_result.returncode != 0:
             detail = (install_result.stderr + "\n" + install_result.stdout).strip()
+            log.warning(
+                "%s install failed for %s: %s", manager_name,
+                ", ".join(packages), detail,
+            )
             raise InstallationError(
-                f"{manager_name} install failed for {', '.join(packages)}: "
+                _apt_failure_hint(detail)
+                or f"{manager_name} install failed for {', '.join(packages)}: "
                 f"{detail or 'unknown error'}"
             )
 
@@ -361,19 +409,24 @@ def _manager_definitions() -> dict[str, _ManagerDefinition]:
                 "--showformat=${Status}",
                 package,
             ],
-            pre_install_argv=[
+            pre_install_argv=_under_timeout(_APT_UPDATE_SECS, (
                 "sudo", "apt-get", "update", "-qq",
                 "-o", "DPkg::Lock::Timeout=60",
-            ],
-            install_argv=lambda packages, _remote: [
-                "sudo",
-                "apt-get",
-                "install",
-                "-y",
-                "--no-install-recommends",
-                "-o", "DPkg::Lock::Timeout=60",
-                *packages,
-            ],
+                *_APT_FAIL_FAST,
+            )),
+            install_argv=lambda packages, _remote: _under_timeout(
+                _APT_INSTALL_SECS,
+                (
+                    "sudo",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "--no-install-recommends",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    *_APT_FAIL_FAST,
+                    *packages,
+                ),
+            ),
             is_installed=lambda result: result.returncode == 0
             and "install ok installed" in result.stdout.lower(),
         ),
@@ -432,6 +485,33 @@ def _package_is_installed(
     return manager.is_installed(result)
 
 
+def _apt_failure_hint(detail: str) -> str | None:
+    """Turn apt's stderr into something a parent can act on, or None.
+
+    This text lands on the parent console and on the kiosk screen a child may
+    be watching, so "E: Could not get lock /var/lib/apt/lists/lock. It is held
+    by process 1246 (apt-get)" is not an acceptable answer.  The raw detail is
+    still logged for whoever opens /debug.
+    """
+    low = detail.lower()
+    if "could not get lock" in low or "unable to acquire" in low:
+        return (
+            "Another install is still finishing. Wait about a minute, then "
+            "hold the card to the reader again."
+        )
+    if (
+        "temporary failure resolving" in low
+        or "could not resolve" in low
+        or "network is unreachable" in low
+        or "connection timed out" in low
+    ):
+        return (
+            "Couldn't reach the internet to download this one. Check Wi-Fi in "
+            "Settings, then hold the card to the reader again."
+        )
+    return None
+
+
 def _run_command(
     argv: Iterable[str],
     *,
@@ -446,7 +526,7 @@ def _run_command(
     except subprocess.TimeoutExpired as exc:
         raise InstallationError(
             f"command timed out after {timeout:.0f}s — "
-            "dpkg lock may be held by another process; try again in a moment"
+            "try again in a moment"
         ) from exc
 
 

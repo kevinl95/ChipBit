@@ -84,6 +84,7 @@ for _attempt in 1 2 3; do
         dbus \
         chromium-browser \
         fonts-dejavu-core \
+        locales \
         python3-installer \
         python3-yaml \
         python3-evdev \
@@ -269,6 +270,14 @@ echo "chipbit:${CHIPBIT_PASSWORD:-chipbit}" | chpasswd
 echo "chipbit ALL=(ALL) NOPASSWD: /usr/bin/localectl set-x11-keymap *" \
     > /etc/sudoers.d/chipbit-localectl
 chmod 0440 /etc/sudoers.d/chipbit-localectl
+
+# Generating a locale needs root.  The script validates its argument against
+# /usr/share/i18n/SUPPORTED before doing anything, so the web form cannot ask
+# for an arbitrary string.
+echo "chipbit ALL=(ALL) NOPASSWD: /usr/share/chipbit/apply_locale.sh *" \
+    > /etc/sudoers.d/chipbit-locale
+chmod 0440 /etc/sudoers.d/chipbit-locale
+chmod 0755 /usr/share/chipbit/apply_locale.sh
 
 # Allow WiFi management from the web service (a system service with no logind
 # session, so polkit blocks nmcli without this).  Scoped to the exact

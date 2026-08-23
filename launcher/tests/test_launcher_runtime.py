@@ -46,10 +46,14 @@ class FakeProcess:
 class PopenRecorder:
     def __init__(self, processes: list[FakeProcess]) -> None:
         self.calls: list[tuple[list[str], bool]] = []
+        self.envs: list[dict | None] = []
         self._processes = list(processes)
 
-    def __call__(self, argv: list[str], *, start_new_session: bool) -> FakeProcess:
+    def __call__(
+        self, argv: list[str], *, start_new_session: bool, env: dict | None = None
+    ) -> FakeProcess:
         self.calls.append((list(argv), start_new_session))
+        self.envs.append(env)
         if not self._processes:
             raise AssertionError("No fake process left for Popen call")
         return self._processes.pop(0)

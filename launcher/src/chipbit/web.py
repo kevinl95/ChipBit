@@ -42,6 +42,16 @@ from .models import (
     save_cards,
     save_user_title,
 )
+from .strings import (
+    LANGUAGES,
+    available_languages,
+    language_tag,
+    load_locale,
+    read_language,
+    t,
+    use_english,
+    write_language,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +96,48 @@ _WIFI_COUNTRIES: list[tuple[str, str]] = [
     ("GB", "United Kingdom"),
     ("US", "United States"),
 ]
+# Console keyboard-layout picker; names come from strings.py ("keyboard.<code>").
+_KEYBOARD_LAYOUTS: tuple[str, ...] = (
+    "us", "gb", "de", "fr", "es", "it", "pt", "nl",
+)
+
 _VALID_COUNTRY_CODES: frozenset[str] = frozenset(c for c, _ in _WIFI_COUNTRIES)
+
+
+# JS files can't call t(), so the scripts carry sentinels that are swapped for
+# the active language's text as the page is written.
+_SCRIPT_STRINGS: dict[str, str] = {
+    "__T_MODE_FIRST_RUN__": "layout.mode.first-run",
+    "__T_MODE_LOCKED__": "layout.mode.locked",
+    "__T_MODE_UNLOCKED__": "layout.mode.unlocked",
+    "__T_WORKING__": "js.working",
+    "__T_WAITING__": "js.waiting_button",
+    "__T_ENROLLING__": "js.enrolling.title",
+    "__T_ENROLLING_BODY__": "js.enrolling.body",
+    "__T_FAILED__": "js.failed.title",
+    "__T_FAILED_BODY__": "js.failed.body",
+    "__T_TRY_AGAIN__": "js.try_again",
+}
+
+
+def _fill_script_strings(script: str) -> str:
+    """Swap __T_*__ sentinels in an inline script for translated text."""
+    for sentinel, key in _SCRIPT_STRINGS.items():
+        if sentinel in script:
+            script = script.replace(sentinel, _js_in_attr(t(key)))
+    return script
+
+
+def _js_in_attr(text: str) -> str:
+    """Escape UI text for a single-quoted JS string inside an HTML attribute.
+
+    Order matters.  JS-escape first, then HTML-escape everything *except* the
+    apostrophe: turning ' into &#x27; would decode back to a bare quote and
+    close the JS string early.  No English string here contains one, but
+    plenty of translations will ("Voulez-vous vraiment l'arrêter ?").
+    """
+    js = text.replace("\\", "\\\\").replace("'", "\\'")
+    return escape(js, quote=False).replace('"', "&quot;")
 
 
 def _reboot_after_delay(runner: CommandRunner, delay: float = 2.0) -> None:
@@ -731,9 +782,9 @@ PARENT_EVENTS_SCRIPT = dedent("""
     var tapBanner = document.getElementById('tap-now-banner');
 
     var MODE_WORDS = {
-      'first-run': 'not set up yet',
-      'locked': 'locked',
-      'unlocked': 'unlocked',
+      'first-run': '__T_MODE_FIRST_RUN__',
+      'locked': '__T_MODE_LOCKED__',
+      'unlocked': '__T_MODE_UNLOCKED__',
     };
     var enrollInProgress = false;
     var overlayPinned = false;  // true while an error is displayed; SSE won't clear it
@@ -769,12 +820,12 @@ PARENT_EVENTS_SCRIPT = dedent("""
       }
       if (state.operation) {
         showOverlay(
-          state.operation.title || 'Working…',
+          state.operation.title || '__T_WORKING__',
           state.operation.message || ''
         );
         document.querySelectorAll('.enroll-form button[disabled]')
           .forEach(function(btn) {
-          btn.textContent = state.operation.message || 'Working…';
+          btn.textContent = state.operation.message || '__T_WORKING__';
         });
       } else if (!enrollInProgress && !overlayPinned) {
         hideOverlay();
@@ -787,11 +838,11 @@ PARENT_EVENTS_SCRIPT = dedent("""
         var btn = form.querySelector('button[type="submit"]');
         if (btn) {
           btn.disabled = true;
-          btn.textContent = 'Waiting for card…';
+          btn.textContent = '__T_WAITING__';
         }
         enrollInProgress = true;
         overlayPinned = false;
-        showOverlay('Enrolling…', 'Tap your card to the reader now');
+        showOverlay('__T_ENROLLING__', '__T_ENROLLING_BODY__');
         fetch(form.action, {
           method: 'POST',
           body: '',
@@ -805,13 +856,13 @@ PARENT_EVENTS_SCRIPT = dedent("""
             } else {
               overlayPinned = true;
               showOverlay(
-                'Enrollment failed',
-                data.error || 'Something went wrong.',
+                '__T_FAILED__',
+                data.error || '__T_FAILED_BODY__',
                 true
               );
               if (btn) {
                 btn.disabled = false;
-                btn.textContent = 'Try again';
+                btn.textContent = '__T_TRY_AGAIN__';
               }
             }
           })
@@ -1081,8 +1132,8 @@ KIOSK_EVENTS_SCRIPT = dedent("""
     events.onerror = () => {
         applyKioskState({
             kind: 'loading',
-            title: 'Reconnecting to ChipBit',
-            body: 'Just a moment.',
+            title: '__T_OFFLINE_TITLE__',
+            body: '__T_OFFLINE_BODY__',
         });
     };
     """).strip()
@@ -1265,6 +1316,10 @@ class WebApp:
     scummvm_executable: str = "scummvm"
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS
     user_catalog_path: Path | None = None
+    # Where the language choice is stored and where locale files are looked
+    # for.  Both overridable so tests and --locales-dir do not touch /var.
+    language_path: Path | None = None
+    locale_dirs: tuple[Path, ...] | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -1348,9 +1403,11 @@ class WebApp:
                   </span>
                 </div>
                 <div class="kiosk-copy">
-                  <h1 class="kiosk-title" id="kiosk-title">Tap a card</h1>
+                  <h1 class="kiosk-title" id="kiosk-title">
+                    {t('kiosk.idle.title')}
+                  </h1>
                   <p class="kiosk-body" id="kiosk-body">
-                    Hold a card against the reader to start playing.
+                    {t('kiosk.idle.body')}
                   </p>
                   <div class="kiosk-progress" id="kiosk-spinner"></div>
                 </div>
@@ -1361,8 +1418,13 @@ class WebApp:
         return self._kiosk_layout(body)
 
     def _kiosk_layout(self, body: str) -> str:
+        kiosk_script = (
+            KIOSK_EVENTS_SCRIPT
+            .replace("__T_OFFLINE_TITLE__", t("kiosk.offline.title"))
+            .replace("__T_OFFLINE_BODY__", t("kiosk.offline.body"))
+        )
         return dedent(f"""<!doctype html>
-            <html lang="en">
+            <html lang="{language_tag()}">
             <head>
               <meta charset="utf-8" />
               <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -1374,7 +1436,7 @@ class WebApp:
             <body>
               {body}
               <script>
-            {KIOSK_EVENTS_SCRIPT}
+            {kiosk_script}
               </script>
             </body>
             </html>
@@ -1471,7 +1533,7 @@ class WebApp:
         if progress:
             return progress[-1].message
         normalized_uid = normalize_uid(uid)
-        return f"Bound {normalized_uid} to {title.id}"
+        return t("msg.bound", uid=normalized_uid, title=title.id)
 
     def remove_card(self, uid: str) -> str:
         with self._mutation_lock:
@@ -1506,6 +1568,49 @@ class WebApp:
         if result.get("reloaded"):
             return "Reloaded daemon config"
         return "No config changes detected"
+
+    def set_language(self, code: str) -> str:
+        """Persist the parent's language choice and apply it immediately.
+
+        The web UI switches on the next page render; launched titles pick it
+        up on their next launch, because the launcher reads the same file.
+        """
+        codes = {choice.code for choice in available_languages(self.locale_dirs)}
+        if code not in codes:
+            raise ValueError(f"unknown language: {code}")
+        write_language(code, self.language_path)
+        if code == "en":
+            use_english()
+        else:
+            load_locale(code, self.locale_dirs)
+            self._ensure_locale_generated(code)
+        return t("msg.language_set")
+
+    def _ensure_locale_generated(self, code: str) -> None:
+        """Generate the POSIX locale so Qt titles can use it.
+
+        Best effort on purpose.  If this fails -- no script, no sudo rule, a
+        dev box -- the launcher still exports LANGUAGE, so gettext titles like
+        TuxPaint translate and only Qt ones (GCompris, KStars) stay English.
+        A partly-translated device beats a failed settings save.
+        """
+        posix_locale = LANGUAGES.get(code, (None, None))[1]
+        if not posix_locale:
+            return
+        try:
+            result = self.runner(
+                ["sudo", "/usr/share/chipbit/apply_locale.sh", posix_locale],
+                check=False, capture_output=True, text=True,
+            )
+        except OSError as exc:
+            log.warning("could not generate locale %s: %s", posix_locale, exc)
+            return
+        if getattr(result, "returncode", 1) != 0:
+            log.warning(
+                "locale %s not generated: %s",
+                posix_locale,
+                (getattr(result, "stderr", "") or "").strip(),
+            )
 
     def set_keyboard_layout(self, layout: str) -> str:
         _VALID_LAYOUTS = {"us", "gb", "de", "fr", "es", "it", "pt", "nl"}
@@ -1588,7 +1693,7 @@ class WebApp:
         )
         return dedent(f"""
             <!doctype html>
-            <html lang="en">
+            <html lang="{language_tag()}">
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1597,26 +1702,24 @@ class WebApp:
             </head>
             <body>
               <header class="site-header">
-                <p class="site-title">{CHIPBIT_MARK}ChipBit setup</p>
+                <p class="site-title">{CHIPBIT_MARK}{t('setup.title')}</p>
               </header>
               <main>
                 {flash}
                 <section class="block">
-                  <h1>Wi-Fi country</h1>
-                  <p>
-                    Choose the country where this ChipBit is being used.
-                    This sets the Wi-Fi radio channels available on your network.
-                    The device will reboot once to apply the setting.
-                  </p>
+                  <h1>{t('setup.country.heading')}</h1>
+                  <p>{t('setup.country.body')}</p>
                   <form method="post" action="/setup/country">
-                    <label>Country
+                    <label>{t('setup.country.label')}
                       <select name="country" required>
-                        <option value="" disabled selected>Select a country…</option>
+                        <option value="" disabled selected>
+                          {t('setup.country.placeholder')}
+                        </option>
                         {options}
                       </select>
                     </label>
                     <button type="submit" class="btn-primary">
-                      Set country and reboot
+                      {t('setup.country.submit')}
                     </button>
                   </form>
                 </section>
@@ -1629,7 +1732,7 @@ class WebApp:
         """Shown immediately after country selection while the device reboots."""
         return dedent("""
             <!doctype html>
-            <html lang="en">
+            <html lang="{language_tag()}">
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1639,13 +1742,12 @@ class WebApp:
             </head>
             <body>
               <header class="site-header">
-                <p class="site-title">__CHIPBIT_MARK__ChipBit setup</p>
+                <p class="site-title">__CHIPBIT_MARK____T_SETUP_TITLE__</p>
               </header>
               <main>
                 <section class="block">
-                  <h1>Rebooting…</h1>
-                  <p>Applying Wi-Fi country settings and rebooting.
-                     This page will reload automatically in about 20 seconds.</p>
+                  <h1>__T_REBOOT_HEADING__</h1>
+                  <p>__T_REBOOT_BODY__</p>
                   <div class="connecting-box">
                     <div class="spinner"></div>
                   </div>
@@ -1654,7 +1756,10 @@ class WebApp:
             </body>
             </html>
         """.replace("__PAGE_CSS__", PAGE_CSS)
-           .replace("__CHIPBIT_MARK__", CHIPBIT_MARK)).strip()
+           .replace("__CHIPBIT_MARK__", CHIPBIT_MARK)
+           .replace("__T_SETUP_TITLE__", t("setup.title"))
+           .replace("__T_REBOOT_HEADING__", t("setup.reboot.heading"))
+           .replace("__T_REBOOT_BODY__", t("setup.reboot.body"))).strip()
 
     def apply_wifi_country(self, country: str) -> None:
         """Save the country code and immediately apply regulatory settings."""
@@ -1677,7 +1782,7 @@ class WebApp:
         flash = self._flash(message, error)
         return dedent(f"""
             <!doctype html>
-            <html lang="en">
+            <html lang="{language_tag()}">
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1686,48 +1791,45 @@ class WebApp:
             </head>
             <body>
               <header class="site-header">
-                <p class="site-title">{CHIPBIT_MARK}ChipBit setup</p>
+                <p class="site-title">{CHIPBIT_MARK}{t('setup.title')}</p>
               </header>
               <main>
                 {flash}
                 <section class="block">
-                  <h1>Connect to Wi-Fi</h1>
-                  <p>
-                    Some activities (like Marble, KStars, and SuperTux) download and
-                    install when a card is first enrolled. They need an internet
-                    connection the first time. You can skip this and connect later
-                    in Settings.
-                  </p>
+                  <h1>{t('setup.wifi.heading')}</h1>
+                  <p>{t('setup.wifi.body')}</p>
                   <p id="wifi-connect-error" class="flash error" hidden></p>
                   <form id="wifi-form" method="post"
                     action="/setup/wifi" class="wifi-form">
-                    <label>Network
+                    <label>{t('common.network')}
                       <select id="ssid-select" name="ssid" required>
-                        <option value="" disabled selected>Scanning…</option>
+                        <option value="" disabled selected>
+                          {t('common.scanning')}
+                        </option>
                       </select>
                     </label>
                     <div id="ssid-manual-row" hidden>
-                      <label>Network name
+                      <label>{t('common.network_name')}
                         <input type="text" id="ssid-manual-input" autocomplete="off" />
                       </label>
                     </div>
-                    <label>Password
+                    <label>{t('common.password')}
                       <input type="password" name="password" />
                     </label>
                     <button type="submit" class="btn-primary">
-                      Connect and continue
+                      {t('setup.wifi.submit')}
                     </button>
                   </form>
                   <div id="wifi-connecting" class="connecting-box" hidden>
                     <div class="spinner"></div>
-                    <p id="wifi-connect-msg">Connecting…</p>
+                    <p id="wifi-connect-msg">{t('setup.wifi.connecting')}</p>
                   </div>
                   <script>{WIFI_SCAN_SCRIPT}</script>
                   <script>{WIFI_CONNECT_SCRIPT}</script>
                   <p class="muted">
-                    <a href="/setup/skip">Skip — I'll connect later</a>
+                    <a href="/setup/skip">{t('setup.wifi.skip')}</a>
                     &nbsp;·&nbsp;
-                    <a href="/debug">Diagnostics</a>
+                    <a href="/debug">{t('common.diagnostics')}</a>
                   </p>
                 </section>
               </main>
@@ -1741,6 +1843,21 @@ class WebApp:
             ("Launcher log", [
                 "sudo", "journalctl", "-u", "chipbit-launcher",
                 "--no-pager", "-n", "60", "--output=short-monotonic",
+            ]),
+            # Input diagnostics.  The launcher takes an *exclusive* grab
+            # (EVIOCGRAB) on whatever find_rfid_reader() picks, so a
+            # misidentified device disappears from the kiosk entirely --
+            # which looks to a parent like dead keyboard or mouse, with
+            # nothing on screen to explain it.  "reader open:" in the
+            # launcher log above names the device that was grabbed; these
+            # two say what else exists and what the compositor can see.
+            ("Input devices", ["cat", "/proc/bus/input/devices"]),
+            ("Seat devices (what the kiosk can open)", [
+                "loginctl", "seat-status", "seat0", "--no-pager",
+            ]),
+            ("Kiosk log", [
+                "sudo", "journalctl", "-u", "chipbit-kiosk",
+                "--no-pager", "-n", "40", "--output=short-monotonic",
             ]),
             ("Disk space", ["df", "-h", "/"]),
             ("Root filesystem expand log", [
@@ -1764,7 +1881,7 @@ class WebApp:
             sections.append(f"<h3>{escape(label)}</h3><pre>{escape(out)}</pre>")
         body = "\n".join(sections)
         flash = f'<p style="color:green">{escape(message)}</p>' if message else ""
-        return f"""<!doctype html><html lang="en"><head>
+        return f"""<!doctype html><html lang="{language_tag()}"><head>
 <meta charset="utf-8"><title>ChipBit diagnostics</title>
 <style>body{{font-family:monospace;padding:1rem}}pre{{background:#f4f4f4;padding:.5rem;white-space:pre-wrap}}</style>
 </head><body><h1>ChipBit diagnostics</h1>{flash}
@@ -1866,10 +1983,7 @@ class WebApp:
         save_user_title(self.user_catalog_path, title)
         self._clear_readiness_cache()
         self.control.reload()
-        return (
-            f'Added “{label}” — use “Tap a card to bind” on its tile above '
-            "to assign a card"
-        )
+        return t("msg.added", label=label)
 
     def _unique_title_id(self, slug: str) -> str:
         catalog = self._load_catalog()
@@ -1907,30 +2021,28 @@ class WebApp:
             items.append(
                 f'<li><form method="post" action="/files/mount" style="display:inline">'
                 f'<input type="hidden" name="device" value="{escape(dev)}" />'
-                f'<button type="submit">Mount: {escape(label)}</button>'
+                '<button type="submit">'
+                f'{escape(t("files.mount", label=label))}</button>'
                 f"</form></li>"
             )
         if not items:
             items.append(
-                "<li>No drives detected. Plug in a drive and click Rescan.</li>"
+                f"<li>{escape(t('files.none'))}</li>"
             )
         drive_list = "\n".join(items)
 
         section = dedent(f"""
             <section class="block">
-              <p class="crumb"><a href="/">&#8592; Parent console</a></p>
-              <h1>Game files</h1>
-              <p class="lede">
-                Find a game folder on a USB drive and copy it into
-                <code>/games/</code>.
-              </p>
+              <p class="crumb"><a href="/">{t('files.crumb_back')}</a></p>
+              <h1>{t('files.heading')}</h1>
+              <p class="lede">{t('files.lede')}</p>
             </section>
             <section class="block">
-              <h2>Drives</h2>
+              <h2>{t('files.drives')}</h2>
               <ul class="file-list">
                 {drive_list}
               </ul>
-              <p class="small"><a href="/files">Rescan</a></p>
+              <p class="small"><a href="/files">{t('files.rescan')}</a></p>
             </section>
             """).strip()
 
@@ -1960,7 +2072,7 @@ class WebApp:
             raise ValueError(str(exc)) from exc
 
         # Breadcrumb: Drives / chipbit / BluesYellow / ...
-        crumb_parts: list[str] = ['<a href="/files">Drives</a>']
+        crumb_parts: list[str] = [f'<a href="/files">{t("files.drives")}</a>']
         built = Path("/")
         for part in p.parts[1:]:  # skip root '/'
             built = built / part
@@ -1975,32 +2087,35 @@ class WebApp:
         # Up link
         parent = p.parent
         if str(parent).startswith(str(_MEDIA_ROOT) + "/"):
-            up_link = f'<p><a href="/files/browse?p={quote(str(parent))}">[up]</a></p>'
+            up_link = (
+                f'<p><a href="/files/browse?p={quote(str(parent))}">'
+                f'{t("files.up")}</a></p>'
+            )
         else:
-            up_link = '<p><a href="/files">[up — drives]</a></p>'
+            up_link = f'<p><a href="/files">{t("files.up_drives")}</a></p>'
 
         # Copy-this-folder form (copies the current directory)
         suggested = p.name.lower().replace(" ", "-")
         copy_form = dedent(f"""
             <section class="block">
-              <h2>Copy this folder to /games/</h2>
+              <h2>{t('files.copy_heading')}</h2>
               <form method="post" action="/files/copy" class="wifi-form">
                 <input type="hidden" name="source" value="{escape(str(p))}" />
                 <input type="hidden" name="back" value="{escape(str(p))}" />
-                <label>Game type
+                <label>{t('files.copy_type')}
                   <select id="copy-type">
-                    <option value="scummvm">ScummVM</option>
-                    <option value="dosbox">DOSBox</option>
-                    <option value="flash">Flash / Ruffle</option>
-                    <option value="">Other</option>
+                    <option value="scummvm">{t('files.copy_type.scummvm')}</option>
+                    <option value="dosbox">{t('files.copy_type.dosbox')}</option>
+                    <option value="flash">{t('files.copy_type.flash')}</option>
+                    <option value="">{t('files.copy_type.other')}</option>
                   </select>
                 </label>
-                <label>Destination in /games/
+                <label>{t('files.copy_dest')}
                   <input type="text" name="dest" id="copy-dest"
                          value="scummvm/{escape(suggested)}"
                          placeholder="scummvm/monkey" required />
                 </label>
-                <button type="submit">Copy folder</button>
+                <button type="submit">{t('files.copy_button')}</button>
               </form>
               <script>
               (function() {{
@@ -2037,7 +2152,8 @@ class WebApp:
             except OSError:
                 continue
 
-        listing = "\n".join(rows) if rows else "<li><em>Empty folder</em></li>"
+        empty = f"<li><em>{escape(t('files.empty'))}</em></li>"
+        listing = "\n".join(rows) if rows else empty
 
         section = dedent(f"""
             <section class="block">
@@ -2046,7 +2162,7 @@ class WebApp:
             </section>
             {copy_form}
             <section class="block">
-              <h2>Contents</h2>
+              <h2>{t('files.contents')}</h2>
               {up_link}
               <ul class="file-list">
                 {listing}
@@ -2096,21 +2212,19 @@ class WebApp:
         if not job:
             return self._layout(
                 "Copy — ChipBit",
-                self._flash(None, "Unknown copy job — it may have already completed.")
+                self._flash(None, t("copy.unknown_job"))
                 + '<section class="block"><p>'
-                + '<a href="/files">Back to drives</a></p></section>',
+                + '<a href="/files">{t("files.back_to_drives")}</a></p></section>',
                 include_events=False,
             )
 
         if not job["done"]:
             status_url = f"/files/copy/status?job={quote(job_id)}"
-            body = dedent("""
+            body = dedent(f"""
                 <section class="block">
-                  <h2>Copying&hellip;</h2>
+                  <h2>{t('copy.heading')}</h2>
                   <div class="spinner"></div>
-                  <p class="muted">
-                    Large games can take a few minutes. Leave this page open.
-                  </p>
+                  <p class="muted">{t('copy.body')}</p>
                 </section>
                 """).strip()
             return self._layout(
@@ -2135,7 +2249,7 @@ class WebApp:
                 "Copy failed — ChipBit",
                 self._flash(None, job["error"])
                 + '<section class="block"><p>'
-                + f'<a href="{escape(back_url)}">Back</a></p></section>',
+                + f'<a href="{escape(back_url)}">{t("common.back")}</a></p></section>',
                 include_events=False,
             )
 
@@ -2155,8 +2269,9 @@ class WebApp:
         # Redirect immediately via meta-refresh — no JS needed.
         return self._layout(
             "Done — ChipBit",
-            '<section class="block"><p>Copy complete. '
-            "Taking you to the card form&hellip;</p></section>",
+            '<section class="block"><p>'
+            + escape(t("copy.done"))
+            + "</p></section>",
             include_events=False,
             head_extra=f'<meta http-equiv="refresh" content="0; url=/?{escape(qs)}" />',
         )
@@ -2394,16 +2509,9 @@ class WebApp:
         section = dedent(f"""
             <section class="wait-screen">
               {CARD_TAP_SVG}
-              <h1>Make this card the admin card</h1>
-              <p class="lede">
-                Pick one card and keep it somewhere the kids can't reach
-                \u2014 it's the key to this page. Hold it against the reader
-                now.
-              </p>
-              <p class="muted small">
-                Nothing to click. This page updates by itself once the reader
-                sees the card.
-              </p>
+              <h1>{t('firstrun.heading')}</h1>
+              <p class="lede">{t('firstrun.lede')}</p>
+              <p class="muted small">{t('firstrun.note')}</p>
               <div class="spinner"></div>
             </section>
             """).strip()
@@ -2418,26 +2526,26 @@ class WebApp:
     ) -> str:
         current = escape(str(status.get("current") or ""))
         playing = (
-            f'<p class="muted small">Playing right now: <strong>{current}</strong></p>'
+            '<p class="muted small">'
+            f"{t('lock.playing')} <strong>{current}</strong></p>"
             if current else ""
         )
         section = dedent(f"""
             <section class="wait-screen">
               {CARD_TAP_SVG}
-              <h1>Tap your admin card to unlock</h1>
-              <p class="lede">
-                Hold the card you set aside against the reader. This page
-                updates by itself.
-              </p>
+              <h1>{t('lock.heading')}</h1>
+              <p class="lede">{t('lock.lede')}</p>
               {playing}
               <div class="spinner"></div>
             </section>
             <hr class="rule" />
             <div class="row small muted" style="justify-content:center">
-              <a href="/debug">Diagnostics</a>
-              <a href="/setup">Wi-Fi setup</a>
+              <a href="/debug">{t('common.diagnostics')}</a>
+              <a href="/setup">{t('common.wifi_setup')}</a>
               <form method="post" action="/settings/shutdown">
-                <button type="submit" class="link-button">Shut down</button>
+                <button type="submit" class="link-button">
+                  {t('common.shutdown')}
+                </button>
               </form>
             </div>
             """).strip()
@@ -2467,11 +2575,23 @@ class WebApp:
         if not card_rows:
             card_rows = (
                 '<tr><td colspan="4" class="muted">'
-                "Nothing bound yet \u2014 pick a title above and tap a "
-                "blank card.</td></tr>"
+                + escape(t("console.cards.empty"))
+                + "</td></tr>"
             )
 
         admin_uid = escape(cards.system_cards["unlock"].uid)
+        keyboard_options = "".join(
+            f'<option value="{code}">{t("keyboard." + code)}</option>'
+            for code in _KEYBOARD_LAYOUTS
+        )
+        shutdown_confirm = _js_in_attr(t("console.settings.shutdown_confirm"))
+        current_language = read_language(self.language_path)
+        language_options = "".join(
+            f'<option value="{choice.code}"'
+            f'{" selected" if choice.code == current_language else ""}>'
+            f"{escape(choice.name)}</option>"
+            for choice in available_languages(self.locale_dirs)
+        )
         section = dedent(f"""
             <div id="op-overlay" class="op-overlay" hidden>
               <div class="spinner"></div>
@@ -2483,8 +2603,7 @@ class WebApp:
                       type="button" hidden title="Dismiss">&times;</button>
             </div>
             <div id="tap-now-banner" class="flash wait" style="display:none">
-              Hold the card against the reader now \u2014 waiting up to
-              30 seconds.
+              {t('console.tap_banner')}
             </div>
             <script>
               function exitAdmin() {{
@@ -2494,18 +2613,15 @@ class WebApp:
             </script>
 
             <section class="block">
-              <h1>Game cards</h1>
-              <p class="lede">
-                Pick a title, hold a blank card against the reader, and that
-                card launches the title from then on. The color on each tile
-                is the one the screen turns when your child taps it.
-              </p>
+              <h1>{t('console.heading')}</h1>
+              <p class="lede">{t('console.lede')}</p>
               <p class="row">
                 <button type="button" class="btn-primary" onclick="exitAdmin()">
-                  Back to play mode
+                  {t('console.back_to_play')}
                 </button>
                 <span class="small muted">
-                  Admin card <span class="uid">{admin_uid}</span>
+                  {t('console.admin_card')}
+                  <span class="uid">{admin_uid}</span>
                 </span>
               </p>
             </section>
@@ -2515,14 +2631,14 @@ class WebApp:
             </section>
 
             <section class="block">
-              <h2>Cards you've made</h2>
+              <h2>{t('console.cards.heading')}</h2>
               <div class="table-wrap">
                 <table class="card-table">
                   <thead>
                     <tr>
-                      <th>Card</th>
-                      <th>Launches</th>
-                      <th>Change</th>
+                      <th>{t('console.cards.col_card')}</th>
+                      <th>{t('console.cards.col_launches')}</th>
+                      <th>{t('console.cards.col_change')}</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -2532,96 +2648,103 @@ class WebApp:
             </section>
 
             <section class="block">
-              <h2>Game files</h2>
-              <p class="muted">
-                Copy game data from a USB drive into <code>/games/</code> so
-                ScummVM, DOSBox, and Ruffle titles can find it.
+              <h2>{t('console.files.heading')}</h2>
+              <p class="muted">{t('console.files.body')}</p>
+              <p>
+                <a class="btn btn-quiet" href="/files">
+                  {t('console.files.open')}
+                </a>
               </p>
-              <p><a class="btn btn-quiet" href="/files">Open the file browser</a></p>
             </section>
 
             <section class="block">
-              <h2>Add your own</h2>
-              <p class="muted">
-                Cards for software you own or a website you'd like your child
-                to visit. Save it here first, then bind a card to it from the
-                tiles above.
-              </p>
+              <h2>{t('console.custom.heading')}</h2>
+              <p class="muted">{t('console.custom.body')}</p>
               <details id="custom-web">
-                <summary>A website</summary>
+                <summary>{t('console.custom.web.summary')}</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="web" />
-                  <label>Name
+                  <label>{t('common.name')}
                     <input type="text" name="label"
                       placeholder="My Website" required /></label>
-                  <label>URL
+                  <label>{t('console.custom.web.url')}
                     <input type="url" name="url"
                       placeholder="https://example.com" required /></label>
-                  <button type="submit">Save website card</button>
+                  <button type="submit">
+                    {t('console.custom.web.save')}
+                  </button>
                 </form>
               </details>
               <details id="custom-exec">
-                <summary>An app already installed on the Pi</summary>
+                <summary>{t('console.custom.exec.summary')}</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="exec" />
-                  <label>Name
+                  <label>{t('common.name')}
                     <input type="text" name="label"
                       placeholder="My App" required /></label>
-                  <label>Launch command
+                  <label>{t('console.custom.exec.cmd')}
                     <input type="text" name="cmd"
                       placeholder="myapp --fullscreen" required /></label>
-                  <label>Apt package to install (optional)
+                  <label>{t('console.custom.exec.apt')}
                     <input type="text" name="apt"
                       placeholder="my-package" /></label>
-                  <button type="submit">Save app card</button>
+                  <button type="submit">
+                    {t('console.custom.exec.save')}
+                  </button>
                 </form>
               </details>
               <details id="custom-scummvm">
-                <summary>A ScummVM game (you supply the game data)</summary>
+                <summary>{t('console.custom.scummvm.summary')}</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="scummvm" />
-                  <label>Name
+                  <label>{t('common.name')}
                     <input type="text" name="label"
                       placeholder="Monkey Island" required /></label>
                   <label>
-                    ScummVM game ID
+                    {t('console.custom.scummvm.game_id')}
                     <input type="text" name="game_id" placeholder="monkey" required />
                   </label>
                   <label>
-                    Data folder under /games/ (blank for scummvm/&lt;name&gt;)
+                    {t('console.custom.scummvm.data_dir')}
                     <input type="text" name="data_dir" placeholder="scummvm/monkey" />
                   </label>
-                  <button type="submit">Save ScummVM card</button>
+                  <button type="submit">
+                    {t('console.custom.scummvm.save')}
+                  </button>
                 </form>
               </details>
               <details id="custom-dosbox">
-                <summary>A DOSBox game (you supply the game data)</summary>
+                <summary>{t('console.custom.dosbox.summary')}</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="dosbox" />
-                  <label>Name
+                  <label>{t('common.name')}
                     <input type="text" name="label"
                       placeholder="My DOS Game" required /></label>
                   <label>
-                    DOSBox config file path under /games/
+                    {t('console.custom.dosbox.conf')}
                     <input type="text" name="conf"
                       placeholder="mygame/dosbox.conf" required />
                   </label>
-                  <button type="submit">Save DOSBox card</button>
+                  <button type="submit">
+                    {t('console.custom.dosbox.save')}
+                  </button>
                 </form>
               </details>
               <details id="custom-ruffle">
-                <summary>A Flash game (you supply the .swf)</summary>
+                <summary>{t('console.custom.ruffle.summary')}</summary>
                 <form method="post" action="/titles/custom" class="wifi-form">
                   <input type="hidden" name="type" value="ruffle" />
-                  <label>Name
+                  <label>{t('common.name')}
                     <input type="text" name="label"
                       placeholder="Math Blaster" required /></label>
                   <label>
-                    SWF path under /games/
+                    {t('console.custom.ruffle.swf')}
                     <input type="text" name="swf"
                       placeholder="flash/mathblaster.swf" required />
                   </label>
-                  <button type="submit">Save Ruffle card</button>
+                  <button type="submit">
+                    {t('console.custom.ruffle.save')}
+                  </button>
                 </form>
               </details>
             </section>
@@ -2644,56 +2767,65 @@ class WebApp:
             </script>
 
             <section class="block">
-              <h2>Settings</h2>
-              <h3>Wi-Fi</h3>
+              <h2>{t('console.settings.heading')}</h2>
+              <h3>{t('console.settings.wifi')}</h3>
               <form method="post" action="/wifi/connect" class="wifi-form">
-                <label>Network
+                <label>{t('common.network')}
                   <select id="ssid-select" name="ssid" required>
-                    <option value="" disabled selected>Scanning\u2026</option>
+                    <option value="" disabled selected>
+                      {t('common.scanning')}
+                    </option>
                   </select>
                 </label>
                 <div id="ssid-manual-row" hidden>
-                  <label>Network name
+                  <label>{t('common.network_name')}
                     <input type="text" id="ssid-manual-input"
                            autocomplete="off" />
                   </label>
                 </div>
-                <label>Password
+                <label>{t('common.password')}
                   <input type="password" name="password" />
                 </label>
-                <button type="submit">Connect</button>
+                <button type="submit">
+                  {t('console.settings.connect')}
+                </button>
               </form>
               <script>{WIFI_SCAN_SCRIPT}</script>
 
-              <h3>Keyboard layout</h3>
-              <form method="post" action="/settings/keyboard" class="inline-form">
-                <label>Layout
-                  <select name="layout">
-                    <option value="us">US (QWERTY)</option>
-                    <option value="gb">UK (QWERTY)</option>
-                    <option value="de">German (QWERTZ)</option>
-                    <option value="fr">French (AZERTY)</option>
-                    <option value="es">Spanish</option>
-                    <option value="it">Italian</option>
-                    <option value="pt">Portuguese</option>
-                    <option value="nl">Dutch</option>
-                  </select>
+              <h3>{t('console.settings.language')}</h3>
+              <form method="post" action="/settings/language" class="inline-form">
+                <label>{t('console.settings.language')}
+                  <select name="language">{language_options}</select>
                 </label>
-                <button type="submit">Apply</button>
+                <button type="submit">
+                  {t('console.settings.apply')}
+                </button>
               </form>
 
-              <h3>This Pi</h3>
+              <h3>{t('console.settings.keyboard')}</h3>
+              <form method="post" action="/settings/keyboard" class="inline-form">
+                <label>{t('console.settings.layout')}
+                  <select name="layout">{keyboard_options}</select>
+                </label>
+                <button type="submit">
+                  {t('console.settings.apply')}
+                </button>
+              </form>
+
+              <h3>{t('console.settings.this_pi')}</h3>
               <div class="row">
                 <form method="post" action="/settings/lock">
                   <button type="submit" class="btn-quiet">
-                    Lock parent controls
+                    {t('console.settings.lock')}
                   </button>
                 </form>
                 <form method="post" action="/settings/shutdown"
-                      onsubmit="return confirm('Shut down the Pi now?')">
-                  <button type="submit" class="btn-danger">Shut down</button>
+                      onsubmit="return confirm('{shutdown_confirm}')">
+                  <button type="submit" class="btn-danger">
+                    {t('common.shutdown')}
+                  </button>
                 </form>
-                <a class="small" href="/debug">Diagnostics</a>
+                <a class="small" href="/debug">{t('common.diagnostics')}</a>
               </div>
             </section>
             """).strip()
@@ -2705,14 +2837,15 @@ class WebApp:
         catalog: Catalog,
         bindings_by_title: dict[str, list[str]],
     ) -> str:
-        raw_state = self._title_state(title, catalog)
+        state = self._title_state(title, catalog)
         # Readiness is the one thing a parent scans this grid for, so it gets a
         # colored chip; the plumbing detail below it stays quiet text.
         chip_class = {
-            "Ready": "ready",
-            "Needs game files": "wait",
-            "Downloads on first use": "wait",
-        }.get(raw_state, "plain")
+            "ready": "ready",
+            "needs_files": "wait",
+            "downloads": "wait",
+        }.get(state, "plain")
+        state_label = escape(t(f"console.state.{state}"))
         ink, _ = ink_for(title.id)
         uids = sorted(bindings_by_title.get(title.id, []))
         if uids:
@@ -2721,7 +2854,7 @@ class WebApp:
             )
             bound = f'<div class="chip-row">{chips}</div>'
         else:
-            bound = '<p class="meta">No card yet</p>'
+            bound = f'<p class="meta">{t("console.tile.no_card")}</p>'
         action = quote(title.id)
         blurb = escape(title.blurb) if title.blurb else escape(
             self._title_summary(title, catalog)
@@ -2732,12 +2865,12 @@ class WebApp:
               <div class="body">
                 <h2>{escape(title.label)}</h2>
                 <p class="meta">{blurb}</p>
-                <p><span class="chip {chip_class}">{escape(raw_state)}</span></p>
+                <p><span class="chip {chip_class}">{state_label}</span></p>
                 {bound}
                 <form method="post" action="/titles/{action}/enroll"
                       class="enroll-form">
                   <button type="submit" class="btn-quiet">
-                    Tap a card to bind
+                    {t('console.tile.bind')}
                   </button>
                 </form>
               </div>
@@ -2755,6 +2888,8 @@ class WebApp:
             for title in titles
         )
         quoted_uid = quote(uid)
+        reassign_label = escape(t("console.cards.reassign_label", uid=uid))
+        disable_confirm = _js_in_attr(t("console.cards.disable_confirm"))
         return dedent(f"""
             <tr>
               <td><span class="uid">{escape(uid)}</span></td>
@@ -2765,10 +2900,12 @@ class WebApp:
                   action="/cards/{quoted_uid}/reassign"
                   class="inline-form"
                 >
-                  <select name="title_id" aria-label="Title for card {escape(uid)}">
+                  <select name="title_id" aria-label="{reassign_label}">
                     {options}
                   </select>
-                  <button type="submit" class="btn-quiet">Reassign</button>
+                  <button type="submit" class="btn-quiet">
+                    {t('console.cards.reassign')}
+                  </button>
                 </form>
               </td>
               <td>
@@ -2776,9 +2913,11 @@ class WebApp:
                   method="post"
                   action="/cards/{quoted_uid}/remove"
                   class="inline-form"
-                  onsubmit="return confirm('Stop this card launching anything?')"
+                  onsubmit="return confirm('{disable_confirm}')"
                 >
-                  <button type="submit" class="btn-caution">Disable</button>
+                  <button type="submit" class="btn-caution">
+                    {t('console.cards.disable')}
+                  </button>
                 </form>
               </td>
             </tr>
@@ -2806,7 +2945,11 @@ class WebApp:
         return f"Ruffle content under {games_root}"
 
     def _title_state(self, title: CatalogTitle, catalog: Catalog) -> str:
-        """One line a parent can act on: can I bind a card to this right now?
+        """Can a parent bind a card to this title right now?
+
+        Returns a stable id, not display text: the chip colour is chosen from
+        it and it must not change when the UI is translated.  The wording
+        lives in strings.py under "console.state.<id>".
 
         Whether a title is bundled, installs on demand, or is waiting on files
         the parent has to supply is an implementation detail everywhere except
@@ -2814,10 +2957,10 @@ class WebApp:
         """
         if title.data == "required":
             ready = self._required_data_ready(title, catalog)
-            return "Ready" if ready else "Needs game files"
+            return "ready" if ready else "needs_files"
         if title.install:
-            return "Downloads on first use"
-        return "Ready"
+            return "downloads"
+        return "ready"
 
     def _kiosk_state(
         self,
@@ -2828,15 +2971,15 @@ class WebApp:
         if status.get("capture_mode") is True:
             return self._kiosk_flood({
                 "kind": "enroll",
-                "title": "Tap a card now",
-                "body": "This card is about to become a game card.",
+                "title": t("kiosk.enroll.title"),
+                "body": t("kiosk.enroll.body"),
             }, "enroll")
 
         if "unlock" not in cards.system_cards:
             return {
                 "kind": "first-run",
-                "title": "Tap a card to make it the admin card",
-                "body": "No network needed for first-run setup.",
+                "title": t("kiosk.first_run.title"),
+                "body": t("kiosk.first_run.body"),
             }
 
         if operation is not None:
@@ -2855,7 +2998,7 @@ class WebApp:
             kiosk = {
                 "kind": "loading",
                 "title": current,
-                "body": "Getting it ready\u2026",
+                "body": t("kiosk.loading.body"),
                 "art": (
                     current_art if isinstance(current_art, str) and current_art
                     else "/art/default"
@@ -2872,13 +3015,12 @@ class WebApp:
             # not what went wrong -- and keep the UID for the grown-up.
             uid = last_event.get("uid", "")
             body = (
-                f"This card isn't set up yet. Card {uid} can be added in the "
-                "parent console."
-                if uid else "This card isn't set up yet."
+                t("kiosk.unknown.body_uid", uid=uid) if uid
+                else t("kiosk.unknown.body")
             )
             return {
                 "kind": "unknown-card",
-                "title": "Ask a grown-up",
+                "title": t("kiosk.unknown.title"),
                 "body": body,
                 "ink": "#f0b429",
                 "on_ink": "#1a1a19",
@@ -2886,8 +3028,8 @@ class WebApp:
 
         return {
             "kind": "idle",
-            "title": "Tap a card",
-            "body": "Hold a card against the reader to start playing.",
+            "title": t("kiosk.idle.title"),
+            "body": t("kiosk.idle.body"),
         }
 
     def _kiosk_flood(self, state: dict[str, str], key: str) -> dict[str, str]:
@@ -2967,21 +3109,24 @@ class WebApp:
         script_body = script
         if include_events and script_body is None:
             script_body = PARENT_EVENTS_SCRIPT
+        if script_body:
+            script_body = _fill_script_strings(script_body)
         script_tag = ""
         if script_body:
             script_tag = f"<script>\n{script_body}\n</script>"
 
         live = ""
         if include_events:
-            live = dedent("""
+            live = dedent(f"""
                 <p class="live">
-                  Parent controls: <strong id="live-mode">checking\u2026</strong>
+                  {t('layout.parent_controls')}
+                  <strong id="live-mode">{t('layout.checking')}</strong>
                   <span id="live-detail"></span>
                 </p>
                 """).strip()
 
         return dedent(f"""<!doctype html>
-            <html lang="en">
+            <html lang="{language_tag()}">
             <head>
               <meta charset="utf-8" />
               <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -3033,6 +3178,8 @@ def create_web_server(
     scummvm_executable: str = "scummvm",
     event_poll_secs: float = DEFAULT_EVENT_POLL_SECS,
     user_catalog_path: Path | None = None,
+    language_path: Path | None = None,
+    locale_dirs: tuple[Path, ...] | None = None,
     games_root: Path = Path("/games"),
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
@@ -3047,6 +3194,8 @@ def create_web_server(
         scummvm_executable=scummvm_executable,
         event_poll_secs=event_poll_secs,
         user_catalog_path=user_catalog_path,
+        language_path=language_path,
+        locale_dirs=locale_dirs,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -3327,6 +3476,8 @@ def create_web_server(
                     message = app.reload_daemon()
                 elif path == "/settings/keyboard":
                     message = app.set_keyboard_layout(form.get("layout", ""))
+                elif path == "/settings/language":
+                    message = app.set_language(form.get("language", ""))
                 elif path == "/settings/lock":
                     message = app.lock_controls()
                 elif path == "/settings/shutdown":

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import chipbit.installer as installer
 from chipbit.installer import (
     DataMissingError,
     InstallationError,
@@ -99,13 +100,24 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
                 returncode=1,
             ),
             ExpectedCall(
-                ["sudo", "apt-get", "update", "-qq", "-o", "DPkg::Lock::Timeout=60"],
+                [
+                    "timeout", "--signal=TERM", "--kill-after=10", "90",
+                    "sudo", "apt-get", "update", "-qq",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    "-o", "Acquire::http::Timeout=15",
+                    "-o", "Acquire::https::Timeout=15",
+                    "-o", "Acquire::Retries=1",
+                ],
             ),
             ExpectedCall(
                 [
+                    "timeout", "--signal=TERM", "--kill-after=10", "540",
                     "sudo", "apt-get", "install", "-y",
                     "--no-install-recommends",
                     "-o", "DPkg::Lock::Timeout=60",
+                    "-o", "Acquire::http::Timeout=15",
+                    "-o", "Acquire::https::Timeout=15",
+                    "-o", "Acquire::Retries=1",
                     "demo-app",
                 ]
             ),
@@ -187,13 +199,24 @@ def test_enroll_card_does_not_bind_when_install_fails(tmp_path: Path) -> None:
                 returncode=1,
             ),
             ExpectedCall(
-                ["sudo", "apt-get", "update", "-qq", "-o", "DPkg::Lock::Timeout=60"],
+                [
+                    "timeout", "--signal=TERM", "--kill-after=10", "90",
+                    "sudo", "apt-get", "update", "-qq",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    "-o", "Acquire::http::Timeout=15",
+                    "-o", "Acquire::https::Timeout=15",
+                    "-o", "Acquire::Retries=1",
+                ],
             ),
             ExpectedCall(
                 [
+                    "timeout", "--signal=TERM", "--kill-after=10", "540",
                     "sudo", "apt-get", "install", "-y",
                     "--no-install-recommends",
                     "-o", "DPkg::Lock::Timeout=60",
+                    "-o", "Acquire::http::Timeout=15",
+                    "-o", "Acquire::https::Timeout=15",
+                    "-o", "Acquire::Retries=1",
                     "demo-app",
                 ],
                 returncode=1,
@@ -346,3 +369,45 @@ def test_has_required_data_requires_scummvm_game_id_match(tmp_path: Path) -> Non
 
     assert has_required_data(title, games_root, runner=runner) is False
     runner.assert_consumed()
+
+
+def test_apt_lock_error_is_reported_in_words_a_parent_can_act_on() -> None:
+    """Regression: a stranded apt-get used to surface its raw lock error.
+
+    A Pi that dropped off Wi-Fi mid-enrollment left an orphaned apt-get holding
+    /var/lib/apt/lists/lock, and the next enrollment showed the parent
+    "E: Could not get lock ... It is held by process 1246 (apt-get)".
+    """
+    lock_error = (
+        "E: Could not get lock /var/lib/apt/lists/lock. "
+        "It is held by process 1246 (apt-get)"
+    )
+    hint = installer._apt_failure_hint(lock_error)
+    assert hint is not None
+    assert "process 1246" not in hint
+    assert "lock" not in hint.lower()
+    assert "again" in hint.lower()
+
+
+def test_offline_apt_error_points_at_wifi() -> None:
+    hint = installer._apt_failure_hint(
+        "E: Temporary failure resolving 'deb.debian.org'"
+    )
+    assert hint is not None
+    assert "Wi-Fi" in hint
+
+
+def test_unrecognised_apt_error_keeps_the_raw_detail() -> None:
+    """Anything we have not seen before must not be silently swallowed."""
+    assert installer._apt_failure_hint("E: Something entirely new") is None
+
+
+def test_apt_commands_run_under_timeout_so_they_cannot_strand_the_lock() -> None:
+    """timeout(1) signals the process group; subprocess's own timeout SIGKILLs
+    only `sudo`, leaving apt-get orphaned and holding the lock."""
+    managers = installer._manager_definitions()
+    apt = managers["apt"]
+    assert apt.pre_install_argv[0] == "timeout"
+    assert "--signal=TERM" in apt.pre_install_argv
+    assert apt.install_argv(("demo",), None)[0] == "timeout"
+
