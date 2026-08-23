@@ -51,8 +51,19 @@ _APT_FAIL_FAST = (
 #    then died with "Could not get lock ... held by process N" until reboot.
 #    timeout(1) runs the command in its own process group and signals the
 #    group with SIGTERM, so apt actually exits and releases the lock.
-_APT_UPDATE_SECS = 90
-_APT_INSTALL_SECS = 540
+# Downloading and unpacking are split on purpose.  Fetching is network-bound
+# and is the part that actually hangs, but killing it is harmless: it only
+# half-fills /var/cache/apt/archives, which apt cleans up by itself.  Unpacking
+# is what must never be interrupted -- a dpkg killed mid-transaction leaves the
+# system demanding "dpkg was interrupted, run dpkg --configure -a", which a
+# parent has no way to do and which blocks every later enrollment.
+#
+# So the long, generous timeout goes on the download, and by the time we unpack
+# everything is already in the cache and the step takes seconds.
+_APT_UPDATE_SECS = 120
+_APT_DOWNLOAD_SECS = 900
+_APT_INSTALL_SECS = 600
+_APT_REPAIR_SECS = 300
 _APT_KILL_AFTER_SECS = 10
 
 
@@ -103,6 +114,11 @@ class _ManagerDefinition:
     install_argv: Callable[[tuple[str, ...], str], list[str]]
     is_installed: Callable[[subprocess.CompletedProcess[str]], bool]
     pre_install_argv: list[str] | None = None
+    # Fetch first, under a generous timeout, so the unpack that follows is
+    # short and need never be interrupted.
+    download_argv: Callable[[tuple[str, ...], str], list[str]] | None = None
+    # Run when a previous install was interrupted and left dpkg half-done.
+    repair_argv: list[str] | None = None
 
 
 def ensure_install_spec_installed(
@@ -180,31 +196,101 @@ def ensure_install_spec_installed(
                 packages=packages,
             )
             update_result = _run_command(
-                manager.pre_install_argv, runner=runner, timeout=120.0
+                manager.pre_install_argv, runner=runner, timeout=_APT_UPDATE_SECS + 30
             )
             if update_result.returncode != 0:
                 detail = (update_result.stderr + "\n" + update_result.stdout).strip()
-                log.warning("%s package list update failed: %s", manager_name, detail)
+                log.warning(
+                    "%s package list update failed (rc=%s): %s",
+                    manager_name, update_result.returncode, detail,
+                )
+                if update_result.returncode in _TIMEOUT_EXIT_CODES:
+                    raise InstallationError(_apt_timed_out(update_result.returncode))
                 raise InstallationError(
                     _apt_failure_hint(detail)
                     or f"{manager_name} package list update failed: "
                     f"{detail or 'unknown error'}"
                 )
 
-        install_result = _run_command(
-            _rewrite_python_executable(
-                manager.install_argv(packages, flatpak_remote),
-                python_executable=executable,
-            ),
-            runner=runner,
-            timeout=600.0,
+        if manager.download_argv is not None:
+            yield InstallProgress(
+                step="installing",
+                message=f"Downloading {', '.join(packages)}",
+                manager=manager_name,
+                packages=packages,
+            )
+            download_result = _run_command(
+                _rewrite_python_executable(
+                    manager.download_argv(packages, flatpak_remote),
+                    python_executable=executable,
+                ),
+                runner=runner,
+                timeout=_APT_DOWNLOAD_SECS + 60,
+            )
+            if download_result.returncode != 0:
+                detail = (
+                    download_result.stderr + "\n" + download_result.stdout
+                ).strip()
+                log.warning(
+                    "%s download failed for %s (rc=%s): %s", manager_name,
+                    ", ".join(packages), download_result.returncode, detail,
+                )
+                if download_result.returncode in _TIMEOUT_EXIT_CODES:
+                    raise InstallationError(
+                        _apt_timed_out(download_result.returncode)
+                    )
+                if not _dpkg_needs_repair(detail):
+                    raise InstallationError(
+                        _apt_failure_hint(detail)
+                        or f"{manager_name} download failed for "
+                        f"{', '.join(packages)}: {detail or 'unknown error'}"
+                    )
+
+        install_argv = _rewrite_python_executable(
+            manager.install_argv(packages, flatpak_remote),
+            python_executable=executable,
         )
+        install_result = _run_command(
+            install_argv, runner=runner, timeout=_APT_INSTALL_SECS + 60
+        )
+
+        if (
+            install_result.returncode != 0
+            and manager.repair_argv is not None
+            and _dpkg_needs_repair(
+                install_result.stderr + "\n" + install_result.stdout
+            )
+        ):
+            # Heal it here rather than telling a parent to open a terminal.
+            yield InstallProgress(
+                step="installing",
+                message="Finishing an interrupted install",
+                manager=manager_name,
+                packages=packages,
+            )
+            log.warning("dpkg needs repair; running %s", manager.repair_argv)
+            repair = _run_command(
+                manager.repair_argv, runner=runner,
+                timeout=_APT_REPAIR_SECS + 30,
+            )
+            if repair.returncode != 0:
+                log.error(
+                    "dpkg repair failed (rc=%s): %s",
+                    repair.returncode, (repair.stderr or "").strip(),
+                )
+            else:
+                install_result = _run_command(
+                    install_argv, runner=runner,
+                    timeout=_APT_INSTALL_SECS + 60,
+                )
         if install_result.returncode != 0:
             detail = (install_result.stderr + "\n" + install_result.stdout).strip()
             log.warning(
-                "%s install failed for %s: %s", manager_name,
-                ", ".join(packages), detail,
+                "%s install failed for %s (rc=%s): %s", manager_name,
+                ", ".join(packages), install_result.returncode, detail,
             )
+            if install_result.returncode in _TIMEOUT_EXIT_CODES:
+                raise InstallationError(_apt_timed_out(install_result.returncode))
             raise InstallationError(
                 _apt_failure_hint(detail)
                 or f"{manager_name} install failed for {', '.join(packages)}: "
@@ -414,6 +500,20 @@ def _manager_definitions() -> dict[str, _ManagerDefinition]:
                 "-o", "DPkg::Lock::Timeout=60",
                 *_APT_FAIL_FAST,
             )),
+            download_argv=lambda packages, _remote: _under_timeout(
+                _APT_DOWNLOAD_SECS,
+                (
+                    "sudo",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "--download-only",
+                    "--no-install-recommends",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    *_APT_FAIL_FAST,
+                    *packages,
+                ),
+            ),
             install_argv=lambda packages, _remote: _under_timeout(
                 _APT_INSTALL_SECS,
                 (
@@ -427,6 +527,9 @@ def _manager_definitions() -> dict[str, _ManagerDefinition]:
                     *packages,
                 ),
             ),
+            repair_argv=_under_timeout(_APT_REPAIR_SECS, (
+                "sudo", "dpkg", "--configure", "-a",
+            )),
             is_installed=lambda result: result.returncode == 0
             and "install ok installed" in result.stdout.lower(),
         ),
@@ -483,6 +586,32 @@ def _package_is_installed(
     )
     result = _run_command(argv, runner=runner)
     return manager.is_installed(result)
+
+
+# timeout(1) exits 124 when it fires, and 137 when the follow-up KILL was
+# needed.  These are by far the most likely failures on a flaky link, and they
+# produce almost no stderr -- so without special-casing them the parent gets
+# "unknown error" after a two-minute wait.
+_TIMEOUT_EXIT_CODES = frozenset({124, 137})
+
+
+def _dpkg_needs_repair(detail: str) -> bool:
+    """Is dpkg refusing to work until someone runs `dpkg --configure -a`?
+
+    A reboot during an install -- or anything else that interrupts dpkg
+    mid-transaction -- leaves the system in this state, and then *every*
+    later enrollment fails.  A parent has no shell and no way out of it, so
+    the device is effectively bricked for new cards until it is repaired.
+    """
+    low = detail.lower()
+    return "dpkg --configure -a" in low or "dpkg was interrupted" in low
+
+
+def _apt_timed_out(returncode: int) -> str:
+    return (
+        "This took too long and was stopped. Check Wi-Fi in Settings, then "
+        "hold the card to the reader again."
+    )
 
 
 def _apt_failure_hint(detail: str) -> str | None:

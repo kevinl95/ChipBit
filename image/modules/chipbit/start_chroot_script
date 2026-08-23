@@ -293,6 +293,9 @@ cat > /etc/sudoers.d/chipbit-apt <<'EOF'
 Defaults!/usr/bin/apt-get env_keep += "DEBIAN_FRONTEND"
 chipbit ALL=(root) NOPASSWD: /usr/bin/apt-get update *
 chipbit ALL=(root) NOPASSWD: /usr/bin/apt-get install *
+# Recover from a dpkg interrupted mid-transaction (a reboot during an install).
+# Exact match, no wildcard: `dpkg -i` on an arbitrary path would be root.
+chipbit ALL=(root) NOPASSWD: /usr/bin/dpkg --configure -a
 EOF
 chmod 0440 /etc/sudoers.d/chipbit-apt
 

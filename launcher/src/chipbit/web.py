@@ -45,8 +45,10 @@ from .models import (
 from .strings import (
     LANGUAGES,
     available_languages,
+    language_is_set,
     language_tag,
     load_locale,
+    peek,
     read_language,
     t,
     use_english,
@@ -117,6 +119,7 @@ _SCRIPT_STRINGS: dict[str, str] = {
     "__T_FAILED__": "js.failed.title",
     "__T_FAILED_BODY__": "js.failed.body",
     "__T_TRY_AGAIN__": "js.try_again",
+    "__T_SLOW_HINT__": "js.slow_hint",
 }
 
 
@@ -647,6 +650,19 @@ PAGE_CSS = dedent("""
     .file-entry { color: var(--ink-70); }
     .file-size { flex: none; font-family: var(--mono); font-size: 0.85rem; }
 
+    /* First-run language choice: one tap, no dropdown, no reading required. */
+    .lang-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+      gap: var(--s3);
+      margin: var(--s4) 0;
+      max-width: 34rem;
+    }
+    .lang-choice {
+      font-size: 1.15rem;
+      padding: var(--s4) var(--s3);
+    }
+
     /* --- waiting screens ------------------------------------------------ */
     /* First run and the lock screen do the same thing: stand still until a
        card shows up.  Same drawing as the kiosk, so the gesture is taught the
@@ -733,6 +749,13 @@ PAGE_CSS = dedent("""
     .op-overlay.error .spinner { display: none; }
     .op-overlay-text strong { display: block; }
     .op-overlay-text span { color: #cfc7b8; font-size: 0.9rem; }
+    /* A clock, so "is this stuck?" has an answer without opening a terminal.
+       Tabular figures stop the width jittering as the seconds tick. */
+    .op-elapsed {
+      display: block;
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+    }
     .op-overlay-dismiss {
       margin-left: auto;
       background: none;
@@ -789,6 +812,34 @@ PARENT_EVENTS_SCRIPT = dedent("""
     var enrollInProgress = false;
     var overlayPinned = false;  // true while an error is displayed; SSE won't clear it
 
+    // Installing a big title can take many minutes with nothing to show for
+    // it, which is indistinguishable from a hang. The clock keeps counting
+    // across progress steps so it measures the whole wait, not the last step.
+    var overlayElapsed = document.getElementById('op-overlay-elapsed');
+    var startedAt = null;
+    var tick = null;
+    var SLOW_AFTER_SECS = 30;
+
+    function renderElapsed() {
+      if (!overlayElapsed || startedAt === null) return;
+      var secs = Math.floor((Date.now() - startedAt) / 1000);
+      var mins = Math.floor(secs / 60);
+      var text = mins + ':' + String(secs % 60).padStart(2, '0');
+      if (secs >= SLOW_AFTER_SECS) text += '  —  __T_SLOW_HINT__';
+      overlayElapsed.textContent = text;
+    }
+    function startClock() {
+      if (tick !== null) return;
+      startedAt = Date.now();
+      renderElapsed();
+      tick = setInterval(renderElapsed, 1000);
+    }
+    function stopClock() {
+      if (tick !== null) { clearInterval(tick); tick = null; }
+      startedAt = null;
+      if (overlayElapsed) overlayElapsed.textContent = '';
+    }
+
     function showOverlay(title, msg, isError) {
       if (overlayTitle) overlayTitle.textContent = title;
       if (overlayMsg) overlayMsg.textContent = msg;
@@ -797,10 +848,14 @@ PARENT_EVENTS_SCRIPT = dedent("""
         overlay.classList.toggle('error', !!isError);
       }
       if (overlayDismiss) overlayDismiss.hidden = !isError;
+      // An error is the end of the wait, so freeze the clock rather than
+      // leaving it counting under a failure message.
+      if (isError) { stopClock(); } else { startClock(); }
     }
     function hideOverlay() {
       if (overlay) { overlay.hidden = true; overlay.classList.remove('error'); }
       if (overlayDismiss) overlayDismiss.hidden = true;
+      stopClock();
     }
 
     if (overlayDismiss) {
@@ -1569,6 +1624,19 @@ class WebApp:
             return "Reloaded daemon config"
         return "No config changes detected"
 
+    def is_first_run(self) -> bool:
+        """No admin card yet -- a genuinely fresh device."""
+        try:
+            return "unlock" not in load_cards(self.cards_path).system_cards
+        except ConfigLoadError:
+            return True
+
+    def needs_language_choice(self) -> bool:
+        """Ask on first run only, and only when there is a real choice."""
+        if language_is_set(self.language_path):
+            return False
+        return len(available_languages(self.locale_dirs)) > 1
+
     def set_language(self, code: str) -> str:
         """Persist the parent's language choice and apply it immediately.
 
@@ -1683,6 +1751,62 @@ class WebApp:
                 seen.add(ssid)
                 ssids.append(ssid)
         return ssids
+
+    def render_language_picker(self, *, next_path: str = "/") -> str:
+        """First-run language choice, shown before anything else.
+
+        This runs ahead of the Wi-Fi country picker on purpose: that screen is
+        English prose asking for a regulatory decision, which is a poor first
+        thing to hand a parent who does not read English.  Choose here and
+        every screen after it is already translated.
+
+        Deliberately wordless.  The heading is the word "Language" in each
+        installed language and the choices are endonyms, so nobody has to read
+        a sentence in a language they do not speak to get out of this screen.
+        """
+        choices = available_languages(self.locale_dirs)
+        words: list[str] = []
+        for choice in choices:
+            word = (
+                t("console.settings.language") if choice.code == "en"
+                else peek(
+                    choice.code, "console.settings.language", self.locale_dirs
+                )
+            )
+            if word and word not in words:
+                words.append(word)
+        heading = escape(" · ".join(words))
+        buttons = "".join(
+            f'<button type="submit" name="language" value="{escape(choice.code)}"'
+            f' class="btn-quiet lang-choice">{escape(choice.name)}</button>'
+            for choice in choices
+        )
+        return dedent(f"""
+            <!doctype html>
+            <html lang="{language_tag()}">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>ChipBit</title>
+              <style>{PAGE_CSS}</style>
+            </head>
+            <body>
+              <header class="site-header">
+                <p class="site-title">{CHIPBIT_MARK}ChipBit</p>
+              </header>
+              <main>
+                <section class="block">
+                  <h1>{heading}</h1>
+                  <form method="post" action="/setup/language" class="lang-grid">
+                    <input type="hidden" name="next" value="{escape(next_path)}" />
+                    {buttons}
+                  </form>
+                  <p class="muted small">{t('setup.language.note')}</p>
+                </section>
+              </main>
+            </body>
+            </html>
+        """).strip()
 
     def render_country_picker(self, *, error: str = "") -> str:
         """First-run country selection page — shown before WiFi setup."""
@@ -2598,6 +2722,7 @@ class WebApp:
               <div class="op-overlay-text">
                 <strong id="op-overlay-title"></strong>
                 <span id="op-overlay-msg"></span>
+                <span id="op-overlay-elapsed" class="op-elapsed"></span>
               </div>
               <button id="op-overlay-dismiss" class="op-overlay-dismiss"
                       type="button" hidden title="Dismiss">&times;</button>
@@ -3226,10 +3351,22 @@ def create_web_server(
             path = urlparse(self.path).path
             try:
                 if path in ("/", "/admin"):
+                    # The first-run page is English prose telling a parent what
+                    # to do with a card, so the language choice has to come
+                    # before it, not after.
+                    if app.is_first_run() and app.needs_language_choice():
+                        self._send_html(
+                            200, app.render_language_picker(next_path="/")
+                        )
+                        return
                     self._send_html(200, app.render_index())
                     return
                 if path == "/setup":
-                    if not _WIFI_COUNTRY_FILE.exists():
+                    if app.needs_language_choice() and not _WIFI_SETUP_FILE.exists():
+                        self._send_html(
+                            200, app.render_language_picker(next_path="/setup")
+                        )
+                    elif not _WIFI_COUNTRY_FILE.exists():
                         self._send_html(200, app.render_country_picker())
                     else:
                         qs = parse_qs(urlparse(self.path).query)
@@ -3478,6 +3615,12 @@ def create_web_server(
                     message = app.set_keyboard_layout(form.get("layout", ""))
                 elif path == "/settings/language":
                     message = app.set_language(form.get("language", ""))
+                elif path == "/setup/language":
+                    app.set_language(form.get("language", ""))
+                    # Whitelisted: this value comes off a form.
+                    nxt = form.get("next", "/")
+                    self._redirect(nxt if nxt in ("/", "/setup") else "/")
+                    return
                 elif path == "/settings/lock":
                     message = app.lock_controls()
                 elif path == "/settings/shutdown":

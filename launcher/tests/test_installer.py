@@ -101,7 +101,7 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
             ),
             ExpectedCall(
                 [
-                    "timeout", "--signal=TERM", "--kill-after=10", "90",
+                    "timeout", "--signal=TERM", "--kill-after=10", "120",
                     "sudo", "apt-get", "update", "-qq",
                     "-o", "DPkg::Lock::Timeout=60",
                     "-o", "Acquire::http::Timeout=15",
@@ -111,7 +111,19 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
             ),
             ExpectedCall(
                 [
-                    "timeout", "--signal=TERM", "--kill-after=10", "540",
+                    "timeout", "--signal=TERM", "--kill-after=10", "900",
+                    "sudo", "apt-get", "install", "-y", "--download-only",
+                    "--no-install-recommends",
+                    "-o", "DPkg::Lock::Timeout=60",
+                    "-o", "Acquire::http::Timeout=15",
+                    "-o", "Acquire::https::Timeout=15",
+                    "-o", "Acquire::Retries=1",
+                    "demo-app",
+                ]
+            ),
+            ExpectedCall(
+                [
+                    "timeout", "--signal=TERM", "--kill-after=10", "600",
                     "sudo", "apt-get", "install", "-y",
                     "--no-install-recommends",
                     "-o", "DPkg::Lock::Timeout=60",
@@ -142,6 +154,7 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
         "network-check",
         "installing",
         "installing",  # update package lists
+        "installing",  # download into the apt cache
         "verifying",
         "installed",
     ]
@@ -200,7 +213,7 @@ def test_enroll_card_does_not_bind_when_install_fails(tmp_path: Path) -> None:
             ),
             ExpectedCall(
                 [
-                    "timeout", "--signal=TERM", "--kill-after=10", "90",
+                    "timeout", "--signal=TERM", "--kill-after=10", "120",
                     "sudo", "apt-get", "update", "-qq",
                     "-o", "DPkg::Lock::Timeout=60",
                     "-o", "Acquire::http::Timeout=15",
@@ -210,8 +223,8 @@ def test_enroll_card_does_not_bind_when_install_fails(tmp_path: Path) -> None:
             ),
             ExpectedCall(
                 [
-                    "timeout", "--signal=TERM", "--kill-after=10", "540",
-                    "sudo", "apt-get", "install", "-y",
+                    "timeout", "--signal=TERM", "--kill-after=10", "900",
+                    "sudo", "apt-get", "install", "-y", "--download-only",
                     "--no-install-recommends",
                     "-o", "DPkg::Lock::Timeout=60",
                     "-o", "Acquire::http::Timeout=15",
@@ -410,4 +423,102 @@ def test_apt_commands_run_under_timeout_so_they_cannot_strand_the_lock() -> None
     assert apt.pre_install_argv[0] == "timeout"
     assert "--signal=TERM" in apt.pre_install_argv
     assert apt.install_argv(("demo",), None)[0] == "timeout"
+
+
+DPKG_INTERRUPTED = (
+    "E: dpkg was interrupted, you must manually run "
+    "'sudo dpkg --configure -a' to correct the problem."
+)
+
+
+def test_interrupted_dpkg_is_detected() -> None:
+    assert installer._dpkg_needs_repair(DPKG_INTERRUPTED)
+    assert not installer._dpkg_needs_repair("E: Unable to locate package foo")
+
+
+def test_timeout_exit_codes_get_a_message_about_waiting_not_a_blank_error() -> None:
+    """timeout(1) kills quietly, so rc alone has to carry the explanation."""
+    for rc in (124, 137):
+        assert rc in installer._TIMEOUT_EXIT_CODES
+    msg = installer._apt_timed_out(124)
+    assert "Wi-Fi" in msg and "again" in msg
+
+
+def test_interrupted_dpkg_is_repaired_and_the_install_retried() -> None:
+    """A reboot mid-install used to brick enrollment until someone SSHed in.
+
+    The device must heal itself on the next card tap instead of telling a
+    parent to open a terminal.
+    """
+    apt = installer._manager_definitions()["apt"]
+    download = apt.download_argv(("demo-app",), None)
+    install = apt.install_argv(("demo-app",), None)
+
+    runner = FakeRunner(
+        [
+            ExpectedCall(
+                ["dpkg-query", "--show", "--showformat=${Status}", "demo-app"],
+                returncode=1,
+            ),
+            ExpectedCall(apt.pre_install_argv),
+            ExpectedCall(download),
+            # first unpack refuses: dpkg is half-configured
+            ExpectedCall(install, returncode=100, stderr=DPKG_INTERRUPTED),
+            ExpectedCall(apt.repair_argv),
+            # retried, and this time it works
+            ExpectedCall(install),
+            ExpectedCall(
+                ["dpkg-query", "--show", "--showformat=${Status}", "demo-app"],
+                stdout="install ok installed",
+            ),
+        ]
+    )
+
+    progress = list(
+        ensure_install_spec_installed(
+            {"apt": ("demo-app",)}, runner=runner, network_checker=lambda: True
+        )
+    )
+    runner.assert_consumed()
+    assert progress[-1].step == "installed"
+    assert any("interrupted" in e.message.lower() for e in progress)
+
+
+def test_repair_that_itself_fails_surfaces_the_original_problem() -> None:
+    """If we cannot heal it, say so rather than pretending the install worked."""
+    apt = installer._manager_definitions()["apt"]
+    runner = FakeRunner(
+        [
+            ExpectedCall(
+                ["dpkg-query", "--show", "--showformat=${Status}", "demo-app"],
+                returncode=1,
+            ),
+            ExpectedCall(apt.pre_install_argv),
+            ExpectedCall(apt.download_argv(("demo-app",), None)),
+            ExpectedCall(
+                apt.install_argv(("demo-app",), None),
+                returncode=100, stderr=DPKG_INTERRUPTED,
+            ),
+            ExpectedCall(apt.repair_argv, returncode=1, stderr="still broken"),
+        ]
+    )
+    with pytest.raises(InstallationError):
+        list(
+            ensure_install_spec_installed(
+                {"apt": ("demo-app",)}, runner=runner, network_checker=lambda: True
+            )
+        )
+    runner.assert_consumed()
+
+
+def test_download_is_the_step_under_the_long_timeout() -> None:
+    """Fetching is safe to interrupt; unpacking is not. Keep it that way."""
+    apt = installer._manager_definitions()["apt"]
+    download = apt.download_argv(("demo-app",), None)
+    install = apt.install_argv(("demo-app",), None)
+    assert "--download-only" in download
+    assert "--download-only" not in install
+    assert int(download[3]) > int(install[3]), (
+        "the network-bound step should get the longer budget"
+    )
 

@@ -14,9 +14,20 @@ from urllib.request import Request, urlopen
 import pytest
 
 import chipbit.web as web_module
+from chipbit import strings
 from chipbit.installer import InstallProgress
 from chipbit.models import load_cards
 from chipbit.web import create_web_server
+
+
+@pytest.fixture(autouse=True)
+def _english_between_tests():
+    """The active locale is module-global and the tests share a process, so a
+    test that loads German would otherwise render every later test's pages in
+    German."""
+    strings.use_english()
+    yield
+    strings.use_english()
 
 
 @dataclass
@@ -470,6 +481,8 @@ def run_web_server(
     *,
     runner=None,
     user_catalog_path: Path | None = None,
+    language_path: Path | None = None,
+    locale_dirs: tuple[Path, ...] | None = None,
 ):
     server = create_web_server(
         "127.0.0.1",
@@ -479,6 +492,8 @@ def run_web_server(
         control_base_url=control_url,
         runner=subprocess.run if runner is None else runner,
         user_catalog_path=user_catalog_path,
+        language_path=language_path,
+        locale_dirs=locale_dirs,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -667,3 +682,76 @@ class DetectRunner:
             "puttmoon: Putt-Putt Goes to the Moon\n",
             "",
         )
+
+
+def _locale_fixture(tmp_path: Path) -> tuple[Path, ...]:
+    d = tmp_path / "locales"
+    d.mkdir()
+    (d / "de.yaml").write_text(
+        'kiosk.idle.title: "Karte auflegen"\n'
+        'firstrun.heading: "Diese Karte zur Admin-Karte machen"\n'
+        'console.settings.language: "Sprache"\n',
+        encoding="utf-8",
+    )
+    return (d,)
+
+
+def test_first_boot_asks_for_a_language_before_anything_else(tmp_path: Path) -> None:
+    """The first-run page is English prose about what to do with a card, so a
+    parent who does not read English has to be able to choose before it."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text("system: {}\n", encoding="utf-8")
+    locales = _locale_fixture(tmp_path)
+    language = tmp_path / "language"
+
+    with run_control_server(FakeControlState(unlocked=False)) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url,
+            language_path=language, locale_dirs=locales,
+        ) as web_url:
+            first = http_get(f"{web_url}/")
+            assert "Deutsch" in first
+            assert "Make this card the admin card" not in first
+
+            http_post(f"{web_url}/setup/language", {"language": "de", "next": "/"})
+            assert language.read_text().strip() == "de"
+
+            after = http_get(f"{web_url}/")
+            assert 'lang="de"' in after
+            assert "Diese Karte zur Admin-Karte machen" in after
+
+
+def test_no_language_prompt_once_it_has_been_chosen(tmp_path: Path) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text("system: {}\n", encoding="utf-8")
+    locales = _locale_fixture(tmp_path)
+    language = tmp_path / "language"
+    language.write_text("en\n", encoding="utf-8")
+
+    with run_control_server(FakeControlState(unlocked=False)) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url,
+            language_path=language, locale_dirs=locales,
+        ) as web_url:
+            body = http_get(f"{web_url}/")
+    assert "Make this card the admin card" in body
+
+
+def test_english_only_image_never_shows_the_picker(tmp_path: Path) -> None:
+    """One language is not a choice; do not add a screen to a first boot."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text("system: {}\n", encoding="utf-8")
+    empty = tmp_path / "no_locales"
+    empty.mkdir()
+
+    with run_control_server(FakeControlState(unlocked=False)) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url,
+            language_path=tmp_path / "language", locale_dirs=(empty,),
+        ) as web_url:
+            body = http_get(f"{web_url}/")
+    assert "Make this card the admin card" in body
+

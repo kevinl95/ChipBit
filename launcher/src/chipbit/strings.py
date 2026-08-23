@@ -71,6 +71,7 @@ STRINGS: dict[str, str] = {
     "common.password": "Password",
     "common.name": "Name",
     "console.settings.language": "Language",
+    "setup.language.note": "You can change this later in Settings.",
     # --- masthead ---------------------------------------------------------
     "layout.parent_controls": "Parent controls:",
     "layout.checking": "checking…",
@@ -253,6 +254,7 @@ STRINGS: dict[str, str] = {
     "js.failed.body": "Something went wrong.",
     "js.try_again": "Try again",
     "js.working": "Working…",
+    "js.slow_hint": "This can take a few minutes on a slow connection.",
     # --- results of an action --------------------------------------------
     "msg.language_set": "Language updated.",
     "msg.bound": "Bound {uid} to {title}",
@@ -296,6 +298,33 @@ def read_language(path: Path | None = None) -> str:
     except OSError:
         return "en"
     return code if code in LANGUAGES else "en"
+
+
+def language_is_set(path: Path | None = None) -> bool:
+    """Has a parent actually chosen, as opposed to defaulting to English?
+
+    read_language() cannot answer this: it returns "en" both for "unset" and
+    for "English was chosen", and first-run needs to tell those apart.
+    """
+    return (path or LANGUAGE_FILE).exists()
+
+
+def peek(code: str, key: str, dirs: tuple[Path, ...] | None = None) -> str | None:
+    """Read one string from a locale without activating it.
+
+    Used to label the first-run picker in each language's own words, so the
+    list stays self-maintaining as locales are added.
+    """
+    for path in locale_search_paths(code, dirs):
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(raw, dict):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
 
 
 def write_language(code: str, path: Path | None = None) -> None:

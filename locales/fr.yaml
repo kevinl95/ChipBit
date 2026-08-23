@@ -178,6 +178,7 @@ copy.body: "Les gros jeux peuvent prendre quelques minutes. Laissez cette page o
 copy.unknown_job: "Tâche de copie inconnue — elle est peut-être déjà terminée."
 copy.done: "Copie terminée. Redirection vers le formulaire de carte…"
 
+setup.language.note: "Vous pourrez changer cela plus tard dans les Paramètres."
 setup.title: "Configuration ChipBit"
 setup.country.heading: "Pays Wi-Fi"
 setup.country.body: >-
@@ -208,6 +209,7 @@ js.failed.title: "Échec de l'association"
 js.failed.body: "Une erreur s'est produite."
 js.try_again: "Réessayer"
 js.working: "En cours…"
+js.slow_hint: "Cela peut prendre quelques minutes sur une connexion lente."
 
 msg.language_set: "Langue mise à jour."
 msg.bound: "{uid} associée à {title}"

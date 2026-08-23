@@ -181,6 +181,7 @@ copy.body: "Große Spiele können ein paar Minuten dauern. Lass diese Seite offe
 copy.unknown_job: "Unbekannter Kopiervorgang — er ist vielleicht schon fertig."
 copy.done: "Kopieren abgeschlossen. Weiter zum Kartenformular …"
 
+setup.language.note: "Du kannst das später in den Einstellungen ändern."
 setup.title: "ChipBit Einrichtung"
 setup.country.heading: "WLAN-Land"
 setup.country.body: >-
@@ -211,6 +212,7 @@ js.failed.title: "Zuweisung fehlgeschlagen"
 js.failed.body: "Etwas ist schiefgelaufen."
 js.try_again: "Erneut versuchen"
 js.working: "Arbeite …"
+js.slow_hint: "Bei langsamer Verbindung kann das ein paar Minuten dauern."
 
 # Note: msg.added quotes the enroll button by name, so it must match
 # console.tile.bind above. If you rename one, rename the other.
