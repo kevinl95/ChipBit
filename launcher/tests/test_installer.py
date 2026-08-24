@@ -39,8 +39,15 @@ class FakeRunner:
 
         expected = self._expected_calls.pop(0)
         assert argv == expected.argv
-        base_kwargs = {k: v for k, v in kwargs.items() if k != "timeout"}
-        assert base_kwargs == {"check": False, "capture_output": True, "text": True}
+        assert kwargs["check"] is False
+        assert kwargs["text"] is True
+        # Output must be captured through files, never pipes: communicate()
+        # waits for EOF, which a daemon left running by a package's postinst
+        # can hold open long after the install succeeded.
+        assert "capture_output" not in kwargs, "pipes reintroduced"
+        assert kwargs["stdout"] is not subprocess.PIPE
+        assert kwargs["stderr"] is not subprocess.PIPE
+        assert kwargs["stdin"] is subprocess.DEVNULL
         return subprocess.CompletedProcess(
             argv,
             expected.returncode,
@@ -520,5 +527,31 @@ def test_download_is_the_step_under_the_long_timeout() -> None:
     assert "--download-only" not in install
     assert int(download[3]) > int(install[3]), (
         "the network-bound step should get the longer budget"
+    )
+
+
+def test_command_returns_as_soon_as_the_child_exits(tmp_path: Path) -> None:
+    """Regression: enrollment used to hang for the whole timeout after a
+    successful install.
+
+    apt exits, but hands its stdout to whatever a package's postinst leaves
+    running.  With pipes, communicate() waits for that write end to close, so
+    ChipBit sat on "installing" and then reported a timeout for a package that
+    had installed perfectly -- the user restarted, tapped the card, and found
+    it working.
+    """
+    import time
+
+    argv = ["sh", "-c", "sleep 30 & echo done; echo warn >&2; exit 0"]
+    start = time.monotonic()
+    result = installer._run_command(argv, runner=subprocess.run, timeout=20.0)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert "done" in result.stdout
+    assert "warn" in result.stderr
+    assert elapsed < 5.0, (
+        f"blocked {elapsed:.1f}s waiting on a background child that inherited "
+        "our output"
     )
 

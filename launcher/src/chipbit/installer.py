@@ -6,6 +6,7 @@ import logging
 import socket
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -647,16 +648,51 @@ def _run_command(
     runner: CommandRunner,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, object] = {"check": False, "capture_output": True, "text": True}
+    """Run a command and capture its output through files, never pipes.
+
+    capture_output=True would be the obvious choice and is a trap here.  It
+    makes pipes, and communicate() reads them until EOF -- which is not the
+    same as waiting for the child to exit.  apt hands its stdout to whatever a
+    package's postinst leaves running in the background, so that write end can
+    stay open long after apt itself has finished and the package is installed
+    correctly.  We would then sit on a "still installing" screen for the whole
+    timeout and finally report a *timeout failure* for an install that
+    succeeded, which is precisely what a parent sees as a hang.
+
+    Files have no such handshake: we wait for the process, read the file, done.
+    """
+    kwargs: dict[str, object] = {"check": False, "text": True}
     if timeout is not None:
         kwargs["timeout"] = timeout
-    try:
-        return runner(list(argv), **kwargs)  # type: ignore[call-overload]
-    except subprocess.TimeoutExpired as exc:
-        raise InstallationError(
-            f"command timed out after {timeout:.0f}s — "
-            "try again in a moment"
-        ) from exc
+
+    with (
+        tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as out,
+        tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err,
+    ):
+        try:
+            result = runner(  # type: ignore[call-overload]
+                list(argv),
+                stdout=out,
+                stderr=err,
+                stdin=subprocess.DEVNULL,
+                **kwargs,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise InstallationError(
+                f"command timed out after {timeout:.0f}s — try again in a moment"
+            ) from exc
+        # A real run leaves stdout/stderr as None and the text in the files; a
+        # test double returns its canned strings directly.
+        out.seek(0)
+        err.seek(0)
+        captured_out = getattr(result, "stdout", None)
+        captured_err = getattr(result, "stderr", None)
+        stdout = out.read() if captured_out is None else captured_out
+        stderr = err.read() if captured_err is None else captured_err
+
+    return subprocess.CompletedProcess(
+        list(argv), result.returncode, stdout, stderr
+    )
 
 
 def _normalize_package_name(package: object, manager_name: str) -> str:

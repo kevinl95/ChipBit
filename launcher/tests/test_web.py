@@ -674,8 +674,11 @@ class DetectRunner:
 
     def __call__(self, argv: list[str], **kwargs):
         self.calls.append(list(argv))
-        required = {"check": False, "capture_output": True, "text": True}
-        assert {k: v for k, v in kwargs.items() if k != "timeout"} == required
+        assert kwargs["check"] is False
+        assert kwargs["text"] is True
+        # See test_installer: output is captured through files, never pipes.
+        assert "capture_output" not in kwargs
+        assert kwargs["stdin"] is subprocess.DEVNULL
         return subprocess.CompletedProcess(
             argv,
             0,
