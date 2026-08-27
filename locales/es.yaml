@@ -212,8 +212,42 @@ js.try_again: "Reintentar"
 js.working: "Trabajando…"
 js.slow_hint: "Esto puede tardar unos minutos con una conexión lenta."
 
+msg.enroll_busy: >-
+  Ya se está configurando algo. Espera a que termine y vuelve a acercar la
+  tarjeta al lector.
 msg.language_set: "Idioma actualizado."
 msg.bound: "{uid} asociada a {title}"
 msg.added: >-
   «{label}» añadido: usa «Asociar una tarjeta» en su ficha de arriba para
   asignarle una tarjeta
+
+# --- guardar el trabajo del niño -------------------------------------------
+console.work.heading: "El trabajo de tu hijo o hija"
+console.work.body: >-
+  Dibujos y otros archivos que las actividades han guardado. Cópialos a una
+  memoria USB para conservarlos.
+console.work.open: "Abrir el trabajo de mi hijo o hija"
+work.heading: "El trabajo de tu hijo o hija"
+work.lede: >-
+  Todo lo que las actividades han guardado. Conecta una memoria USB y cópialo
+  a un lugar seguro.
+work.empty: >-
+  Aún no hay nada guardado. En cuanto tu hijo o hija dibuje o construya algo,
+  aparecerá aquí.
+work.from_title: "De {title}"
+work.other_files: "{count} archivo(s) más que no son imágenes"
+work.truncated: "Se muestran las primeras {shown} de {total} imágenes."
+work.copy_heading: "Copiar a una memoria USB"
+work.copy_drive: "Unidad"
+work.copy_button: "Copiar todo a esta unidad"
+work.no_drives: >-
+  No se ha encontrado ninguna memoria USB. Conecta una y pulsa Volver a
+  buscar.
+work.rescan: "Volver a buscar"
+work.copying: "Copiando el trabajo de tu hijo o hija…"
+work.copying_body: "Deja esta página abierta hasta que termine."
+work.done: "Copiado. Ya puedes retirar la memoria."
+work.done_no_unmount: >-
+  Copiado, pero la unidad sigue ocupada. Espera unos segundos antes de
+  retirarla.
+work.failed: "No se ha podido copiar a la unidad: {detail}"

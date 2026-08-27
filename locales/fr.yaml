@@ -211,8 +211,42 @@ js.try_again: "Réessayer"
 js.working: "En cours…"
 js.slow_hint: "Cela peut prendre quelques minutes sur une connexion lente."
 
+msg.enroll_busy: >-
+  Quelque chose est déjà en cours de configuration. Attendez la fin, puis
+  approchez de nouveau la carte du lecteur.
 msg.language_set: "Langue mise à jour."
 msg.bound: "{uid} associée à {title}"
 msg.added: >-
   « {label} » ajouté — utilisez « Associer une carte » sur sa vignette
   ci-dessus pour lui associer une carte
+
+# --- sauvegarder les créations de l'enfant ---------------------------------
+console.work.heading: "Les créations de votre enfant"
+console.work.body: >-
+  Dessins et autres fichiers enregistrés par les activités. Copiez-les sur une
+  clé USB pour les conserver.
+console.work.open: "Ouvrir les créations de mon enfant"
+work.heading: "Les créations de votre enfant"
+work.lede: >-
+  Tout ce que les activités ont enregistré. Branchez une clé USB et copiez le
+  tout en lieu sûr.
+work.empty: >-
+  Rien d'enregistré pour l'instant. Dès que votre enfant dessine ou construit
+  quelque chose, cela apparaîtra ici.
+work.from_title: "De {title}"
+work.other_files: "{count} autre(s) fichier(s) qui ne sont pas des images"
+work.truncated: "Affichage des {shown} premières images sur {total}."
+work.copy_heading: "Copier sur une clé USB"
+work.copy_drive: "Lecteur"
+work.copy_button: "Tout copier sur ce lecteur"
+work.no_drives: >-
+  Aucune clé USB détectée. Branchez-en une, puis choisissez Rechercher à
+  nouveau.
+work.rescan: "Rechercher à nouveau"
+work.copying: "Copie des créations de votre enfant…"
+work.copying_body: "Laissez cette page ouverte jusqu'à la fin."
+work.done: "Copié. Vous pouvez retirer la clé."
+work.done_no_unmount: >-
+  Copié, mais le lecteur est encore occupé. Attendez quelques secondes avant
+  de le retirer.
+work.failed: "Impossible de copier sur le lecteur : {detail}"

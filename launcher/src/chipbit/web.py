@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -60,6 +62,14 @@ log = logging.getLogger(__name__)
 
 DEFAULT_EVENT_POLL_SECS = 1.0
 _MEDIA_ROOT = Path("/media")
+# Files a parent would recognise as "my child's work" and want to look at
+# before copying.  Anything else in a work directory is still backed up, just
+# not previewed.
+_WORK_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp"})
+# A wall of full-size PNGs is served straight from disk (no image library on
+# the device to make thumbnails), so cap what one page will render.
+_WORK_PREVIEW_LIMIT = 120
+
 _WIFI_COUNTRY_FILE = Path("/var/lib/chipbit/wifi_country")
 # Written when the user completes (or skips) WiFi setup for the first time.
 # /kiosk redirects to /setup while this file is absent and country is set.
@@ -630,6 +640,35 @@ PAGE_CSS = dedent("""
     }
     details[open] summary::before { content: "\\2212"; }
     details[open] > *:not(summary) { margin-top: var(--s3); }
+
+    /* --- the child's work ----------------------------------------------- */
+    /* Pictures, not filenames: a parent recognises the drawing long before
+       they parse "2026-08-14-153022.png". Served full-size because the device
+       has no image library to make thumbnails with, so they load lazily. */
+    .work-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: var(--s4);
+      margin-top: var(--s3);
+    }
+    .work-item { margin: 0; }
+    .work-item img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: contain;
+      background: var(--card);
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+      box-shadow: 3px 3px 0 rgba(26, 26, 25, 0.14);
+    }
+    .work-item figcaption {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--ink-45);
+      margin-top: var(--s1);
+      overflow-wrap: anywhere;
+    }
 
     /* --- file browser --------------------------------------------------- */
     .crumb { font-size: 0.88rem; color: var(--ink-70); margin-bottom: var(--s2); }
@@ -1392,6 +1431,9 @@ class WebApp:
     # for.  Both overridable so tests and --locales-dir do not touch /var.
     language_path: Path | None = None
     locale_dirs: tuple[Path, ...] | None = None
+    # Where the titles' user_dirs live.  Overridable so tests never touch a
+    # real home directory.
+    home_path: Path | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -1416,6 +1458,16 @@ class WebApp:
     )
     _operation: dict[str, str] | None = field(
         default=None,
+        init=False,
+        repr=False,
+    )
+    _export_jobs: dict = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _export_jobs_lock: threading.Lock = field(
+        default_factory=threading.Lock,
         init=False,
         repr=False,
     )
@@ -2450,6 +2502,284 @@ class WebApp:
             head_extra=f'<meta http-equiv="refresh" content="0; url=/?{escape(qs)}" />',
         )
 
+    def render_work(
+        self, *, message: str | None = None, error: str | None = None
+    ) -> str:
+        sections: list[str] = []
+        total_images = 0
+        for label, directory in self.work_dirs():
+            images, others = self._work_files(directory)
+            total_images += len(images)
+            if not images and not others:
+                continue
+            shown = images[:_WORK_PREVIEW_LIMIT]
+            tiles = "".join(
+                f'<figure class="work-item">'
+                f'<a href="/work/file?p={quote(str(image))}" target="_blank">'
+                f'<img loading="lazy" src="/work/file?p={quote(str(image))}" '
+                f'alt="{escape(image.name)}" /></a>'
+                f"<figcaption>{escape(image.name)}</figcaption></figure>"
+                for image in shown
+            )
+            notes = []
+            if len(images) > len(shown):
+                notes.append(
+                    escape(t("work.truncated", shown=len(shown), total=len(images)))
+                )
+            if others:
+                notes.append(escape(t("work.other_files", count=others)))
+            note = (
+                f'<p class="muted small">{" · ".join(notes)}</p>' if notes else ""
+            )
+            sections.append(
+                f'<section class="block">'
+                f"<h2>{escape(t('work.from_title', title=label))}</h2>"
+                f'<div class="work-grid">{tiles}</div>{note}</section>'
+            )
+
+        if not sections:
+            body = (
+                '<section class="block"><p class="lede">'
+                + escape(t("work.empty"))
+                + "</p></section>"
+            )
+        else:
+            body = "".join(sections)
+
+        drives = self._detect_drives()
+        if drives:
+            options = "".join(
+                f'<option value="{escape(str(d))}">{escape(d.name)}</option>'
+                for d in drives
+            )
+            copy_form = dedent(f"""
+                <section class="block">
+                  <h2>{t('work.copy_heading')}</h2>
+                  <form method="post" action="/work/copy" class="inline-form">
+                    <label>{t('work.copy_drive')}
+                      <select name="drive">{options}</select>
+                    </label>
+                    <button type="submit" class="btn-primary">
+                      {t('work.copy_button')}
+                    </button>
+                  </form>
+                </section>
+                """).strip()
+        else:
+            copy_form = dedent(f"""
+                <section class="block">
+                  <h2>{t('work.copy_heading')}</h2>
+                  <p class="muted">{t('work.no_drives')}</p>
+                  <p><a class="btn btn-quiet" href="/work">{t('work.rescan')}</a></p>
+                </section>
+                """).strip()
+
+        header = dedent(f"""
+            <section class="block">
+              <p class="crumb"><a href="/">{t('files.crumb_back')}</a></p>
+              <h1>{t('work.heading')}</h1>
+              <p class="lede">{t('work.lede')}</p>
+            </section>
+            """).strip()
+
+        return self._layout(
+            "ChipBit",
+            self._flash(message, error) + header + copy_form + body,
+            include_events=False,
+        )
+
+    def render_work_export_status(self, job_id: str) -> str:
+        with self._export_jobs_lock:
+            job = dict(self._export_jobs.get(job_id, {}))
+        if not job:
+            return self._layout(
+                "ChipBit",
+                self._flash(None, t("copy.unknown_job"))
+                + f'<section class="block"><p><a href="/work">'
+                f'{t("common.back")}</a></p></section>',
+                include_events=False,
+            )
+
+        if not job["done"]:
+            status_url = f"/work/copy/status?job={quote(job_id)}"
+            body = dedent(f"""
+                <section class="block">
+                  <h1>{t('work.copying')}</h1>
+                  <p class="muted">{t('work.copying_body')}</p>
+                  <div class="spinner"></div>
+                </section>
+                """).strip()
+            return self._layout(
+                "ChipBit", body, include_events=False,
+                head_extra=(
+                    '<meta http-equiv="refresh" '
+                    f'content="2; url={escape(status_url)}" />'
+                ),
+            )
+
+        with self._export_jobs_lock:
+            self._export_jobs.pop(job_id, None)
+
+        if job["error"]:
+            return self.render_work(error=t("work.failed", detail=job["error"]))
+        done = t("work.done") if job["unmounted"] else t("work.done_no_unmount")
+        return self.render_work(message=done)
+
+    def start_work_export(self, drive: str) -> str:
+        """Copy every work directory onto ``drive``; returns a job id."""
+        target = Path(drive)
+        if target not in self._detect_drives():
+            raise ValueError(f"not a mounted drive: {drive}")
+        sources = self.work_dirs()
+        if not sources:
+            raise ValueError("there is nothing saved to copy yet")
+
+        import uuid
+
+        job_id = uuid.uuid4().hex[:12]
+        with self._export_jobs_lock:
+            self._export_jobs[job_id] = {
+                "done": False, "error": None, "unmounted": False, "files": 0,
+            }
+        thread = threading.Thread(
+            target=self._run_work_export,
+            args=(job_id, target, sources),
+            daemon=True,
+        )
+        thread.start()
+        return job_id
+
+    def _run_work_export(
+        self, job_id: str, drive: Path, sources: list[tuple[str, Path]]
+    ) -> None:
+        error: str | None = None
+        copied = 0
+        # Date-stamped so backing up twice never overwrites the first copy.
+        root = drive / "ChipBit" / time.strftime("%Y-%m-%d")
+        try:
+            for _label, directory in sources:
+                dest_base = root / directory.name.lstrip(".")
+                for entry in sorted(directory.rglob("*")):
+                    if not entry.is_file():
+                        continue
+                    dest = dest_base / entry.relative_to(directory)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    # copy, not copy2: preserving mode/times raises on FAT,
+                    # which is what a USB stick from a drawer is formatted as.
+                    shutil.copy(entry, dest)
+                    copied += 1
+        except (OSError, shutil.Error) as exc:
+            error = str(exc)
+
+        unmounted = False
+        if error is None:
+            # Parents pull the stick the instant the bar stops, so flush and
+            # unmount before saying a word about it being safe.
+            try:
+                self.runner(["sync"], check=False, capture_output=True, text=True)
+            except OSError:
+                pass
+            device = self._device_for_mount(drive)
+            if device:
+                try:
+                    result = self.runner(
+                        ["udisksctl", "unmount", "-b", device],
+                        check=False, capture_output=True, text=True,
+                    )
+                    unmounted = result.returncode == 0
+                except OSError:
+                    unmounted = False
+
+        with self._export_jobs_lock:
+            self._export_jobs[job_id] = {
+                "done": True, "error": error,
+                "unmounted": unmounted, "files": copied,
+            }
+
+    def _home(self) -> Path:
+        """Home directory the titles save into.
+
+        Mirrors how the launcher resolves it, because user_dirs are relative
+        to whatever HOME the title was launched with.
+        """
+        if self.home_path is not None:
+            return self.home_path
+        return Path(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+
+    def work_dirs(self) -> list[tuple[str, Path]]:
+        """(title label, directory) for every declared, existing work dir.
+
+        Driven off the catalog's user_dirs, which the launcher already creates
+        at launch -- so supporting a new title's work is a catalog edit, not a
+        code change.  Nothing outside these directories is ever exposed.
+        """
+        home = self._home()
+        found: list[tuple[str, Path]] = []
+        try:
+            catalog = self._load_catalog()
+        except ConfigLoadError:
+            return found
+        for title in self._sorted_titles(catalog):
+            for rel in title.user_dirs:
+                directory = (home / rel).resolve()
+                # A user_dir is catalog-supplied; refuse anything that escapes.
+                if home not in directory.parents and directory != home:
+                    log.warning("ignoring user_dir outside home: %s", directory)
+                    continue
+                if directory.is_dir():
+                    found.append((title.label, directory))
+        return found
+
+    def _work_files(self, directory: Path) -> tuple[list[Path], int]:
+        """Previewable images, plus a count of everything else."""
+        images: list[Path] = []
+        others = 0
+        try:
+            entries = sorted(directory.rglob("*"))
+        except OSError:
+            return images, others
+        for entry in entries:
+            try:
+                if not entry.is_file() or entry.name.startswith("."):
+                    continue
+            except OSError:
+                continue
+            if entry.suffix.lower() in _WORK_IMAGE_SUFFIXES:
+                images.append(entry)
+            else:
+                others += 1
+        # Newest first: a parent is usually after what was just made.
+        images.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        return images, others
+
+    def resolve_work_file(self, raw: str) -> Path:
+        """Map a request path to a file, or refuse.
+
+        Allow-list rather than sanitise: the file has to live under one of the
+        declared work directories, checked after resolving symlinks.
+        """
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise ValueError("work path must be absolute")
+        resolved = candidate.resolve()
+        for _label, directory in self.work_dirs():
+            if resolved == directory or directory in resolved.parents:
+                if resolved.is_file():
+                    return resolved
+                raise ValueError("not a file")
+        raise ValueError("path is not inside a work directory")
+
+    def _device_for_mount(self, mount: Path) -> str | None:
+        """Backing device for a mount point, so it can be unmounted again."""
+        try:
+            for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and _unescape_mount_path(parts[1]) == str(mount):
+                    return parts[0]
+        except OSError:
+            pass
+        return None
+
     def _detect_drives(self) -> list[Path]:
         drives = []
         try:
@@ -2820,6 +3150,16 @@ class WebApp:
                   <tbody>{card_rows}</tbody>
                 </table>
               </div>
+            </section>
+
+            <section class="block">
+              <h2>{t('console.work.heading')}</h2>
+              <p class="muted">{t('console.work.body')}</p>
+              <p>
+                <a class="btn btn-quiet" href="/work">
+                  {t('console.work.open')}
+                </a>
+              </p>
             </section>
 
             <section class="block">
@@ -3423,6 +3763,24 @@ def create_web_server(
                         msg = "Connected to Wi-Fi." if qs.get("connected") else ""
                         self._send_html(200, app.render_setup(message=msg))
                     return
+                if path == "/work":
+                    self._send_html(200, app.render_work())
+                    return
+                if path == "/work/file":
+                    qs = parse_qs(urlparse(self.path).query)
+                    try:
+                        target = app.resolve_work_file(qs.get("p", [""])[0])
+                    except (ValueError, OSError):
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    self._serve_work_file(target)
+                    return
+                if path == "/work/copy/status":
+                    qs = parse_qs(urlparse(self.path).query)
+                    job_id = qs.get("job", [""])[0]
+                    self._send_html(200, app.render_work_export_status(job_id))
+                    return
                 if path == "/setup/skip":
                     _WIFI_SETUP_FILE.touch()
                     self._redirect("/")
@@ -3560,6 +3918,28 @@ def create_web_server(
             self.end_headers()
             self.wfile.write(data)
 
+        def _serve_work_file(self, target: Path) -> None:
+            """Serve one of the child's files.
+
+            The path was already allow-listed against the declared work
+            directories by resolve_work_file; this only reads and sends it.
+            """
+            guessed, _ = mimetypes.guess_type(target.name)
+            try:
+                data = target.read_bytes()
+            except OSError:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", guessed or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            # A drawing is immutable once saved, and the gallery may request a
+            # hundred of them; let the browser keep them.
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+
         def _send_json(self, code: int, payload: dict) -> None:
             body = json.dumps(payload).encode()
             self.send_response(code)
@@ -3680,6 +4060,10 @@ def create_web_server(
                         form.get("ssid", ""),
                         form.get("password"),
                     )
+                elif path == "/work/copy":
+                    job_id = app.start_work_export(form.get("drive", ""))
+                    self._redirect(f"/work/copy/status?job={quote(job_id)}")
+                    return
                 elif path == "/titles/custom":
                     message = app.create_custom_title(form)
                 else:

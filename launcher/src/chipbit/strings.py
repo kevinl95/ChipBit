@@ -141,6 +141,40 @@ STRINGS: dict[str, str] = {
     "console.cards.reassign_label": "Title for card {uid}",
     "console.cards.disable": "Disable",
     "console.cards.disable_confirm": "Stop this card launching anything?",
+    # --- backing up a child's work ---------------------------------------
+    "console.work.heading": "Your child's work",
+    "console.work.body": (
+        "Drawings and other files the activities have saved. Copy them to a "
+        "USB drive to keep them."
+    ),
+    "console.work.open": "Open my child's work",
+    "work.heading": "Your child's work",
+    "work.lede": (
+        "Everything the activities have saved. Plug in a USB drive and copy it "
+        "somewhere safe."
+    ),
+    "work.empty": (
+        "Nothing saved yet. Once your child draws or builds something, it will "
+        "show up here."
+    ),
+    "work.from_title": "From {title}",
+    "work.other_files": "{count} more file(s) that aren't pictures",
+    "work.truncated": "Showing the first {shown} of {total} pictures.",
+    "work.copy_heading": "Copy to a USB drive",
+    "work.copy_drive": "Drive",
+    "work.copy_button": "Copy everything to this drive",
+    "work.no_drives": (
+        "No USB drive found. Plug one in, then choose Look again."
+    ),
+    "work.rescan": "Look again",
+    "work.copying": "Copying your child's work\u2026",
+    "work.copying_body": "Leave this page open until it finishes.",
+    "work.done": "Copied. You can remove the drive now.",
+    "work.done_no_unmount": (
+        "Copied, but the drive is still busy. Wait a few seconds before "
+        "removing it."
+    ),
+    "work.failed": "Could not copy to the drive: {detail}",
     "console.files.heading": "Game files",
     "console.files.body": (
         "Copy game data from a USB drive into <code>/games/</code> so ScummVM, "

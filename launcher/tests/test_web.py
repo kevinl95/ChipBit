@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -829,4 +830,196 @@ def test_enroll_lock_is_released_after_a_failure(tmp_path: Path) -> None:
 
     assert app._enroll_lock.acquire(blocking=False), "lock leaked after failure"
     app._enroll_lock.release()
+
+
+# --- backing up the child's work -------------------------------------------
+
+FAKE_PNG = b"\x89PNG fake image bytes"
+
+
+def write_work_catalog(tmp_path: Path) -> Path:
+    """Like write_catalog, but the title declares where it saves work."""
+    catalog_path = tmp_path / "work-catalog.yaml"
+    catalog_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: demo
+    label: Demo App
+    type: exec
+    bundled: true
+    cmd: [demo-app, --fullscreen]
+    user_dirs: [".tuxpaint"]
+""",
+        encoding="utf-8",
+    )
+    return catalog_path
+
+
+def _work_app(tmp_path: Path, catalog_path: Path):
+    home = tmp_path / "home"
+    (home / ".tuxpaint" / "saved").mkdir(parents=True)
+    for name in ("2026-08-20.png", "2026-08-21.png"):
+        (home / ".tuxpaint" / "saved" / name).write_bytes(FAKE_PNG)
+    (home / ".tuxpaint" / "settings.dat").write_text("brush=3\n")
+
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+        def reload(self):
+            return {}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path,
+        control=Control(), home_path=home,
+    )
+    return app, home
+
+
+def test_work_is_discovered_from_the_catalogs_user_dirs(tmp_path: Path) -> None:
+    """Supporting a new title's work must stay a catalog edit, not a code change."""
+    app, home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    found = app.work_dirs()
+    assert [d for _label, d in found] == [(home / ".tuxpaint").resolve()]
+
+    images, others = app._work_files(found[0][1])
+    assert len(images) == 2
+    assert others == 1, "non-images are counted, not previewed"
+
+
+def test_only_declared_work_directories_are_readable(tmp_path: Path) -> None:
+    """The console runs on a family device; it must not become a file browser."""
+    app, home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    ok = home / ".tuxpaint" / "saved" / "2026-08-20.png"
+    assert app.resolve_work_file(str(ok)) == ok.resolve()
+
+    escaped = home / ".tuxpaint" / ".." / ".." / "etc" / "passwd"
+    for bad in ("/etc/passwd", str(escaped)):
+        with pytest.raises((ValueError, OSError)):
+            app.resolve_work_file(bad)
+
+
+def test_a_user_dir_escaping_home_is_ignored(tmp_path: Path) -> None:
+    """user_dirs is catalog-supplied, so it is not automatically trusted."""
+    catalog_path = tmp_path / "escaping.yaml"
+    catalog_path.write_text(
+        """
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: demo
+    label: Demo App
+    type: exec
+    bundled: true
+    cmd: [demo-app]
+    user_dirs: ["../../etc"]
+""",
+        encoding="utf-8",
+    )
+    app, _home = _work_app(tmp_path, catalog_path)
+    assert app.work_dirs() == []
+
+
+def test_export_copies_everything_not_just_the_pictures(tmp_path: Path) -> None:
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    drive = tmp_path / "media" / "STICK"
+    drive.mkdir(parents=True)
+    app._detect_drives = lambda: [drive]
+    app._device_for_mount = lambda mount: "/dev/sda1"
+
+    job = app.start_work_export(str(drive))
+    _await_export(app, job)
+
+    copied = sorted(
+        str(f.relative_to(drive)) for f in drive.rglob("*") if f.is_file()
+    )
+    assert any(c.endswith("saved/2026-08-20.png") for c in copied)
+    assert any(c.endswith("settings.dat") for c in copied), (
+        "a backup that silently drops files is worse than no backup"
+    )
+    # date-stamped, so backing up twice never overwrites the first copy
+    assert all(c.startswith("ChipBit/") for c in copied)
+
+
+def test_export_syncs_and_unmounts_before_saying_it_is_safe(tmp_path: Path) -> None:
+    """Parents pull the stick the moment the bar stops."""
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    drive = tmp_path / "media" / "STICK"
+    drive.mkdir(parents=True)
+    app._detect_drives = lambda: [drive]
+    app._device_for_mount = lambda mount: "/dev/sda1"
+
+    ran: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        ran.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    app.runner = runner
+    job = app.start_work_export(str(drive))
+    state = _await_export(app, job)
+
+    assert ["sync"] in ran
+    assert ["udisksctl", "unmount", "-b", "/dev/sda1"] in ran
+    assert ran.index(["sync"]) < ran.index(["udisksctl", "unmount", "-b", "/dev/sda1"])
+    assert state["unmounted"] is True
+
+
+def test_export_that_cannot_unmount_says_so(tmp_path: Path) -> None:
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    drive = tmp_path / "media" / "STICK"
+    drive.mkdir(parents=True)
+    app._detect_drives = lambda: [drive]
+    app._device_for_mount = lambda mount: "/dev/sda1"
+    app.runner = lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "busy")
+
+    job = app.start_work_export(str(drive))
+    state = _await_export(app, job)
+    assert state["unmounted"] is False
+    assert "Wait a few seconds" in app.render_work_export_status(job)
+
+
+def test_export_refuses_a_drive_that_is_not_mounted(tmp_path: Path) -> None:
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    app._detect_drives = lambda: []
+    with pytest.raises(ValueError):
+        app.start_work_export("/media/not-there")
+
+
+def test_work_page_has_an_empty_state(tmp_path: Path) -> None:
+    catalog_path = write_work_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path,
+        control=Control(), home_path=empty_home,
+    )
+    assert "Nothing saved yet" in app.render_work()
+
+
+def _await_export(app, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with app._export_jobs_lock:
+            state = dict(app._export_jobs.get(job_id, {}))
+        if state.get("done"):
+            return state
+        time.sleep(0.02)
+    raise AssertionError("export job never finished")
 

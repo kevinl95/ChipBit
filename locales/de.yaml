@@ -216,8 +216,41 @@ js.slow_hint: "Bei langsamer Verbindung kann das ein paar Minuten dauern."
 
 # Note: msg.added quotes the enroll button by name, so it must match
 # console.tile.bind above. If you rename one, rename the other.
+msg.enroll_busy: >-
+  Es wird gerade schon etwas eingerichtet. Warte, bis es fertig ist, und halte
+  die Karte dann erneut an das Lesegerät.
 msg.language_set: "Sprache aktualisiert."
 msg.bound: "{uid} mit {title} verknüpft"
 msg.added: >-
   „{label}“ hinzugefügt — verwende „Karte zuweisen“ auf der Kachel oben, um
   eine Karte zuzuweisen
+
+# --- Arbeiten des Kindes sichern -------------------------------------------
+console.work.heading: "Werke deines Kindes"
+console.work.body: >-
+  Zeichnungen und andere Dateien, die die Aktivitäten gespeichert haben.
+  Kopiere sie auf einen USB-Stick, um sie aufzubewahren.
+console.work.open: "Werke meines Kindes öffnen"
+work.heading: "Werke deines Kindes"
+work.lede: >-
+  Alles, was die Aktivitäten gespeichert haben. Steck einen USB-Stick ein und
+  kopiere es an einen sicheren Ort.
+work.empty: >-
+  Noch nichts gespeichert. Sobald dein Kind etwas malt oder baut, erscheint es
+  hier.
+work.from_title: "Aus {title}"
+work.other_files: "{count} weitere Datei(en), die keine Bilder sind"
+work.truncated: "Es werden die ersten {shown} von {total} Bildern gezeigt."
+work.copy_heading: "Auf einen USB-Stick kopieren"
+work.copy_drive: "Laufwerk"
+work.copy_button: "Alles auf dieses Laufwerk kopieren"
+work.no_drives: >-
+  Kein USB-Stick gefunden. Steck einen ein und wähle dann Erneut suchen.
+work.rescan: "Erneut suchen"
+work.copying: "Werke deines Kindes werden kopiert …"
+work.copying_body: "Lass diese Seite offen, bis es fertig ist."
+work.done: "Kopiert. Du kannst den Stick jetzt abziehen."
+work.done_no_unmount: >-
+  Kopiert, aber das Laufwerk ist noch beschäftigt. Warte ein paar Sekunden,
+  bevor du es abziehst.
+work.failed: "Kopieren auf das Laufwerk fehlgeschlagen: {detail}"
