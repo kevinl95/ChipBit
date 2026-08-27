@@ -256,6 +256,10 @@ STRINGS: dict[str, str] = {
     "js.working": "Working…",
     "js.slow_hint": "This can take a few minutes on a slow connection.",
     # --- results of an action --------------------------------------------
+    "msg.enroll_busy": (
+        "Something is already being set up. Wait for it to finish, then hold "
+        "the card to the reader again."
+    ),
     "msg.language_set": "Language updated.",
     "msg.bound": "Bound {uid} to {title}",
     "msg.added": (

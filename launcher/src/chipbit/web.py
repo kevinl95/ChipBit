@@ -13,6 +13,7 @@ import time
 import zlib
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -840,6 +841,22 @@ PARENT_EVENTS_SCRIPT = dedent("""
       if (overlayElapsed) overlayElapsed.textContent = '';
     }
 
+    // The server refuses a second enrollment outright, because arming capture
+    // twice corrupts the first one. Greying the buttons stops a parent
+    // discovering that the hard way.
+    function setEnrollButtonsBusy(busy) {
+      document.querySelectorAll('.enroll-form button').forEach(function (btn) {
+        if (busy) {
+          if (!btn.dataset.label) btn.dataset.label = btn.textContent.trim();
+          btn.disabled = true;
+        } else if (btn.dataset.label) {
+          btn.disabled = false;
+          btn.textContent = btn.dataset.label;
+          delete btn.dataset.label;
+        }
+      });
+    }
+
     function showOverlay(title, msg, isError) {
       if (overlayTitle) overlayTitle.textContent = title;
       if (overlayMsg) overlayMsg.textContent = msg;
@@ -878,12 +895,10 @@ PARENT_EVENTS_SCRIPT = dedent("""
           state.operation.title || '__T_WORKING__',
           state.operation.message || ''
         );
-        document.querySelectorAll('.enroll-form button[disabled]')
-          .forEach(function(btn) {
-          btn.textContent = state.operation.message || '__T_WORKING__';
-        });
+        setEnrollButtonsBusy(true);
       } else if (!enrollInProgress && !overlayPinned) {
         hideOverlay();
+        setEnrollButtonsBusy(false);
       }
     };
 
@@ -892,6 +907,7 @@ PARENT_EVENTS_SCRIPT = dedent("""
         e.preventDefault();
         var btn = form.querySelector('button[type="submit"]');
         if (btn) {
+          if (!btn.dataset.label) btn.dataset.label = btn.textContent.trim();
           btn.disabled = true;
           btn.textContent = '__T_WAITING__';
         }
@@ -915,6 +931,7 @@ PARENT_EVENTS_SCRIPT = dedent("""
                 data.error || '__T_FAILED_BODY__',
                 true
               );
+              setEnrollButtonsBusy(false);
               if (btn) {
                 btn.disabled = false;
                 btn.textContent = '__T_TRY_AGAIN__';
@@ -1380,6 +1397,13 @@ class WebApp:
         init=False,
         repr=False,
     )
+    # Held for a whole enrollment, capture included.  See
+    # _one_enrollment_at_a_time for why this cannot be a blocking wait.
+    _enroll_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
     _readiness_cache: dict[tuple[str, ...], bool] = field(
         default_factory=dict,
         init=False,
@@ -1515,8 +1539,31 @@ class WebApp:
             "system_cards": len(cards.system_cards),
         }
 
+    @contextmanager
+    def _one_enrollment_at_a_time(self):
+        """Refuse a second enrollment while one is already in flight.
+
+        control.capture() is a single slot on the daemon: arming it again sets
+        _capture_uid back to None and clears the event the first caller is
+        waiting on.  One card tap then wakes *both* callers with the *same*
+        uid, they queue on _mutation_lock, and the card ends up bound to
+        whichever install finishes last -- after running two installs.  The
+        parent thinks they enrolled two cards and actually enrolled none of
+        what they meant.
+
+        Refusing rather than queueing on purpose: an install can run for
+        minutes, and silently parking a parent behind it looks identical to
+        the hang we just spent days removing.
+        """
+        if not self._enroll_lock.acquire(blocking=False):
+            raise RuntimeError(t("msg.enroll_busy"))
+        try:
+            yield
+        finally:
+            self._enroll_lock.release()
+
     def enroll_admin(self) -> str:
-        with self._mutation_lock:
+        with self._one_enrollment_at_a_time(), self._mutation_lock:
             cards = load_cards(self.cards_path)
             if "unlock" in cards.system_cards:
                 raise ValueError("admin card is already enrolled")
@@ -1537,8 +1584,11 @@ class WebApp:
     def enroll_title(self, title_id: str) -> str:
         cards = load_cards(self.cards_path)
         self._require_unlocked(cards)
-        uid = self.control.capture()
-        return self.enroll_title_for_uid(uid, title_id)
+        # The guard has to wrap capture too, not just the install: arming a
+        # second capture is what corrupts the first one's result.
+        with self._one_enrollment_at_a_time():
+            uid = self.control.capture()
+            return self.enroll_title_for_uid(uid, title_id)
 
     def reassign_card(self, uid: str, title_id: str) -> str:
         normalized_uid = normalize_uid(uid)

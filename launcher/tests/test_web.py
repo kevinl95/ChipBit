@@ -758,3 +758,75 @@ def test_english_only_image_never_shows_the_picker(tmp_path: Path) -> None:
             body = http_get(f"{web_url}/")
     assert "Make this card the admin card" in body
 
+
+def test_second_enrollment_is_refused_while_one_is_running(tmp_path: Path) -> None:
+    """Regression: arming capture twice corrupts the first enrollment.
+
+    capture() is one slot on the daemon. A second arm clears the first
+    waiter's uid and event, so a single card tap wakes both callers with the
+    same uid and the card is bound to whichever install finishes last.
+    """
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "ff-ee-dd"\ncards: {}\n', encoding="utf-8"
+    )
+
+    captures = []
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+        def capture(self):
+            captures.append(1)
+            return "AABBCC"
+
+        def reload(self):
+            return {}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path, control=Control()
+    )
+
+    # stand in for an enrollment already in flight
+    assert app._enroll_lock.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            app.enroll_title("demo")
+    finally:
+        app._enroll_lock.release()
+
+    assert "already being set up" in str(excinfo.value)
+    # and crucially: capture was never armed, so the running enrollment's
+    # pending card tap is untouched
+    assert captures == []
+
+
+def test_enroll_lock_is_released_after_a_failure(tmp_path: Path) -> None:
+    """A failed enrollment must not wedge the device against all later ones."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "ff-ee-dd"\ncards: {}\n', encoding="utf-8"
+    )
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+        def capture(self):
+            raise RuntimeError("reader exploded")
+
+        def reload(self):
+            return {}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path, control=Control()
+    )
+    with pytest.raises(RuntimeError):
+        app.enroll_title("demo")
+
+    assert app._enroll_lock.acquire(blocking=False), "lock leaked after failure"
+    app._enroll_lock.release()
+
