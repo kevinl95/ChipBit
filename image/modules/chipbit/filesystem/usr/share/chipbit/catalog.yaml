@@ -68,7 +68,11 @@ titles:
     bundled: true
     install: { apt: [tuxpaint, tuxpaint-stamps-default] }
     cmd: ["tuxpaint", "--nosound", "--savedir=/var/lib/chipbit/tuxpaint"]
-    user_dirs: [".tuxpaint"]
+    # Must match --savedir above: that is where the drawings actually land, and
+    # it is what "Your child's work" backs up.  ~/.tuxpaint is kept for config
+    # written by TuxPaint versions that ignore --savedir; missing dirs are
+    # skipped, so listing both is free.
+    user_dirs: ["/var/lib/chipbit/tuxpaint", ".tuxpaint"]
     subject: art
     min_age: 3
     blurb: "Creative painting for young children."
@@ -85,6 +89,27 @@ titles:
     min_age: 6
     blurb: "Spin a 3D globe and explore the world."
     art: /art/marble.png
+
+  - id: libreoffice-writer
+    label: "LibreOffice Writer"
+    type: exec
+    bundled: false
+    # gtk3 is the VCL plugin; without it LibreOffice falls back to the plain
+    # X11 backend, which works but looks two decades old.  Named explicitly
+    # because enrollment installs with --no-install-recommends.
+    # This is by far the largest title in the catalog (a few hundred MB), so
+    # the first enrollment takes a while on a slow link.
+    install: { apt: [libreoffice-writer, libreoffice-gtk3] }
+    cmd: ["soffice", "--writer", "--nologo"]
+    # Documents/ is created by the launcher before the title starts, and the
+    # image points XDG_DOCUMENTS_DIR at it, so "Save" lands somewhere
+    # predictable and "Your child's work" can back it up.  Keep the two in
+    # step: see filesystem/home/chipbit/.config/user-dirs.dirs.
+    user_dirs: ["Documents"]
+    subject: writing
+    min_age: 8
+    blurb: "Write and print stories, letters and homework."
+    art: /art/libreoffice-writer.png
 
   - id: kstars
     label: "KStars"

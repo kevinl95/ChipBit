@@ -1,7 +1,0 @@
-#!/bin/bash
-# Run SuperTuxKart via XWayland — SDL2's Wayland EGL surface negotiation gives
-# STK a 0x0 window under cage, breaking widget layout.  X11 via XWayland has
-# synchronous size handling that STK relies on.
-export SDL_VIDEODRIVER=x11
-export DISPLAY=:0
-exec supertuxkart "$@"

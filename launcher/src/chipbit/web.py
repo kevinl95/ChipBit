@@ -70,6 +70,11 @@ _WORK_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp"})
 # the device to make thumbnails), so cap what one page will render.
 _WORK_PREVIEW_LIMIT = 120
 
+# Persistent state root.  Titles are often pointed here rather than at $HOME
+# (TuxPaint's --savedir, Chromium's --user-data-dir), so work lives under it
+# as legitimately as it does under home.
+_STATE_ROOT = Path("/var/lib/chipbit")
+
 _WIFI_COUNTRY_FILE = Path("/var/lib/chipbit/wifi_country")
 # Written when the user completes (or skips) WiFi setup for the first time.
 # /kiosk redirects to /setup while this file is absent and country is set.
@@ -1434,6 +1439,7 @@ class WebApp:
     # Where the titles' user_dirs live.  Overridable so tests never touch a
     # real home directory.
     home_path: Path | None = None
+    state_path: Path | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -2714,6 +2720,11 @@ class WebApp:
         code change.  Nothing outside these directories is ever exposed.
         """
         home = self._home()
+        state = self.state_path or _STATE_ROOT
+        # A user_dir may be relative to home, or an absolute path under the
+        # state root -- TuxPaint's --savedir puts drawings in the latter, and
+        # a gallery that only looked at home found nothing at all.
+        roots = (home, state.resolve())
         found: list[tuple[str, Path]] = []
         try:
             catalog = self._load_catalog()
@@ -2722,9 +2733,13 @@ class WebApp:
         for title in self._sorted_titles(catalog):
             for rel in title.user_dirs:
                 directory = (home / rel).resolve()
-                # A user_dir is catalog-supplied; refuse anything that escapes.
-                if home not in directory.parents and directory != home:
-                    log.warning("ignoring user_dir outside home: %s", directory)
+                # Catalog-supplied, so still not trusted to stay in bounds.
+                if not any(
+                    directory == root or root in directory.parents
+                    for root in roots
+                ):
+                    log.warning("ignoring user_dir outside the allowed roots: %s",
+                                directory)
                     continue
                 if directory.is_dir():
                     found.append((title.label, directory))

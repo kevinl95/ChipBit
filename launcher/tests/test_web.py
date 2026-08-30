@@ -17,7 +17,7 @@ import pytest
 import chipbit.web as web_module
 from chipbit import strings
 from chipbit.installer import InstallProgress
-from chipbit.models import load_cards
+from chipbit.models import load_cards, load_catalog_merged
 from chipbit.web import create_web_server
 
 
@@ -878,7 +878,7 @@ def _work_app(tmp_path: Path, catalog_path: Path):
 
     app = web_module.WebApp(
         catalog_path=catalog_path, cards_path=cards_path,
-        control=Control(), home_path=home,
+        control=Control(), home_path=home, state_path=tmp_path / "state",
     )
     return app, home
 
@@ -1022,4 +1022,127 @@ def _await_export(app, job_id: str, timeout: float = 5.0) -> dict:
             return state
         time.sleep(0.02)
     raise AssertionError("export job never finished")
+
+
+def test_work_dirs_can_live_outside_home(tmp_path: Path) -> None:
+    """Titles are often pointed at the state root rather than $HOME.
+
+    TuxPaint runs with --savedir=/var/lib/chipbit/tuxpaint, so a gallery that
+    only looked under home found nothing at all on a real device.
+    """
+    state = tmp_path / "state"
+    saved = state / "tuxpaint" / "saved"
+    saved.mkdir(parents=True)
+    (saved / "drawing.png").write_bytes(FAKE_PNG)
+
+    catalog_path = tmp_path / "abs.yaml"
+    catalog_path.write_text(
+        f"""
+meta:
+  catalog_version: 1
+settings:
+  games_root: /games
+titles:
+  - id: tuxpaint
+    label: Tux Paint
+    type: exec
+    bundled: true
+    cmd: [tuxpaint]
+    user_dirs: ["{state}/tuxpaint"]
+""",
+        encoding="utf-8",
+    )
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path, control=Control(),
+        home_path=tmp_path / "home", state_path=state,
+    )
+    assert [d for _label, d in app.work_dirs()] == [(state / "tuxpaint").resolve()]
+
+
+def test_shipped_catalog_backs_up_where_titles_actually_save() -> None:
+    """A title that pins its save location must declare that same location.
+
+    These drifted apart once: tuxpaint saved to --savedir=/var/lib/chipbit/...
+    while user_dirs still said ".tuxpaint", so the backup gallery was empty.
+    """
+    repo_catalog = Path(__file__).resolve().parents[2] / "catalog" / "catalog.yaml"
+    if not repo_catalog.exists():
+        pytest.skip("repo catalog not present")
+    catalog = load_catalog_merged(repo_catalog, None)
+
+    for title in catalog.titles.values():
+        savedirs = [
+            arg.split("=", 1)[1]
+            for arg in title.cmd
+            if arg.startswith("--savedir=")
+        ]
+        for savedir in savedirs:
+            assert savedir in title.user_dirs, (
+                f"{title.id} saves into {savedir} but does not declare it in "
+                "user_dirs, so its work would not be backed up"
+            )
+
+
+def test_xdg_document_pin_matches_the_catalog() -> None:
+    """A title that relies on the XDG pin must declare the same directory.
+
+    LibreOffice has no --savedir flag, so its save location is pinned by
+    ~/.config/user-dirs.dirs in the image instead. Same drift risk as TuxPaint,
+    different mechanism: if these two disagree, documents are saved somewhere
+    "Your child's work" never looks.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    user_dirs_file = (
+        repo / "image" / "modules" / "chipbit" / "filesystem"
+        / "home" / "chipbit" / ".config" / "user-dirs.dirs"
+    )
+    catalog_file = repo / "catalog" / "catalog.yaml"
+    if not user_dirs_file.exists() or not catalog_file.exists():
+        pytest.skip("image overlay or catalog not present")
+
+    pinned = {}
+    for line in user_dirs_file.read_text().splitlines():
+        if line.startswith("XDG_") and "=" in line:
+            key, value = line.split("=", 1)
+            pinned[key] = value.strip().strip('"')
+
+    documents = pinned.get("XDG_DOCUMENTS_DIR", "")
+    assert documents.startswith("$HOME/"), documents
+    relative = documents[len("$HOME/"):]
+
+    catalog = load_catalog_merged(catalog_file, None)
+    users_of_xdg = [
+        title for title in catalog.titles.values()
+        if title.cmd and title.cmd[0] == "soffice"
+    ]
+    assert users_of_xdg, "expected at least one XDG-following title"
+    for title in users_of_xdg:
+        assert relative in title.user_dirs, (
+            f"{title.id} saves into $HOME/{relative} via the XDG pin but does "
+            "not declare it in user_dirs, so its documents would not be "
+            "backed up"
+        )
+
+
+def test_catalog_and_image_overlay_agree() -> None:
+    """The image ships its own copy of the catalog; keep them identical."""
+    repo = Path(__file__).resolve().parents[2]
+    src = repo / "catalog" / "catalog.yaml"
+    overlay = (
+        repo / "image" / "modules" / "chipbit" / "filesystem"
+        / "usr" / "share" / "chipbit" / "catalog.yaml"
+    )
+    if not src.exists() or not overlay.exists():
+        pytest.skip("catalog or overlay not present")
+    assert src.read_text() == overlay.read_text(), (
+        "catalog/catalog.yaml and the image overlay copy have drifted; "
+        "the device would ship a different catalog than the repo shows"
+    )
 

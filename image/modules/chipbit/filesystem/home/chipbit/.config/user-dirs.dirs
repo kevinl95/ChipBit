@@ -1,0 +1,12 @@
+# Pin where "Save" goes for desktop apps that follow the XDG spec.
+#
+# Without this, a GTK save dialog defaults to $HOME and a child's documents
+# scatter through the home directory -- where "Your child's work" does not
+# look, so the backup would silently miss them. That exact drift already bit
+# us once with TuxPaint's --savedir.
+#
+# Must match the `user_dirs` declared for LibreOffice in catalog.yaml. The
+# launcher creates the directory before the title starts.
+XDG_DOCUMENTS_DIR="$HOME/Documents"
+XDG_DOWNLOAD_DIR="$HOME/Documents"
+XDG_DESKTOP_DIR="$HOME"

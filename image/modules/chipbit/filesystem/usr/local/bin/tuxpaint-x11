@@ -1,7 +1,0 @@
-#!/bin/bash
-# Run TuxPaint via XWayland — SDL2's Wayland surface is not reliably surfaced
-# by cage for fullscreen-capable apps.  X11 via XWayland works the same way
-# SuperTux2 (windowed SDL2) works, but without depending on cage's xdg behavior.
-export SDL_VIDEODRIVER=x11
-export DISPLAY=:0
-exec tuxpaint "$@"
