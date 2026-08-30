@@ -470,8 +470,6 @@ rm -f /usr/share/chipbit/chipbit-*.whl
 # 6. Enable systemd services
 # ---------------------------------------------------------------------------
 chmod 755 /usr/local/sbin/chipbit-expand-rootfs
-chmod 755 /usr/local/bin/supertuxkart-x11
-chmod 755 /usr/local/bin/tuxpaint-x11
 systemctl enable chipbit-expand-rootfs.service
 systemctl enable chipbit-xwayland.service
 systemctl enable chipbit-kiosk.service
