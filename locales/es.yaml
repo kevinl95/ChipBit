@@ -40,6 +40,9 @@ kiosk.unknown.body: "Esta tarjeta aún no está configurada."
 kiosk.unknown.body_uid: >-
   Esta tarjeta aún no está configurada. La tarjeta {uid} se puede añadir en la
   consola de padres.
+kiosk.quota.title: "Ya está por hoy"
+kiosk.quota.body: >-
+  Se ha acabado el tiempo de pantalla. Pregunta a un adulto si necesitas más.
 kiosk.offline.title: "Reconectando con ChipBit"
 kiosk.offline.body: "Un momento."
 
@@ -105,7 +108,7 @@ console.cards.disable_confirm: "¿Desactivar esta tarjeta para que no abra nada?
 console.files.heading: "Archivos de juego"
 console.files.body: >-
   Copia los datos del juego desde una unidad USB a <code>/games/</code> para
-  que los títulos de ScummVM, DOSBox y Ruffle puedan encontrarlos.
+  que los títulos de ScummVM y Ruffle puedan encontrarlos.
 console.files.open: "Abrir el explorador de archivos"
 
 console.custom.heading: "Añade los tuyos"
@@ -125,9 +128,6 @@ console.custom.scummvm.game_id: "ID de juego de ScummVM"
 console.custom.scummvm.data_dir: >-
   Carpeta de datos en /games/ (vacío para scummvm/&lt;nombre&gt;)
 console.custom.scummvm.save: "Guardar tarjeta de ScummVM"
-console.custom.dosbox.summary: "Un juego de DOSBox (tú aportas los datos)"
-console.custom.dosbox.conf: "Ruta del archivo de configuración de DOSBox en /games/"
-console.custom.dosbox.save: "Guardar tarjeta de DOSBox"
 console.custom.ruffle.summary: "Un juego Flash (tú aportas el .swf)"
 console.custom.ruffle.swf: "Ruta del .swf en /games/"
 console.custom.ruffle.save: "Guardar tarjeta de Ruffle"
@@ -164,7 +164,6 @@ files.mount: "Montar: {label}"
 files.copy_heading: "Copiar esta carpeta a /games/"
 files.copy_type: "Tipo de juego"
 files.copy_type.scummvm: "ScummVM"
-files.copy_type.dosbox: "DOSBox"
 files.copy_type.flash: "Flash / Ruffle"
 files.copy_type.other: "Otro"
 files.copy_dest: "Destino en /games/"
@@ -251,3 +250,20 @@ work.done_no_unmount: >-
   Copiado, pero la unidad sigue ocupada. Espera unos segundos antes de
   retirarla.
 work.failed: "No se ha podido copiar a la unidad: {detail}"
+
+# --- tiempo de pantalla ----------------------------------------------------
+console.screen_time.heading: "Tiempo de pantalla"
+console.screen_time.body: >-
+  Un límite diario para el tiempo que pueden estar abiertos los títulos. La
+  pantalla de espera no cuenta, y la tarjeta admin siempre funciona, así que
+  nunca te quedas fuera.
+console.screen_time.limit: "Minutos al día"
+console.screen_time.off_hint: "0 significa sin límite."
+console.screen_time.save: "Guardar límite"
+console.screen_time.used: "Usado hoy: {used} de {limit} minutos."
+console.screen_time.used_no_limit: "Usado hoy: {used} minutos. Sin límite."
+console.screen_time.exhausted: "El tiempo de pantalla de hoy se ha agotado."
+console.screen_time.reset: "Dar más tiempo hoy"
+console.screen_time.reset_confirm: "¿Poner a cero el tiempo de pantalla de hoy?"
+msg.screen_time_saved: "Límite de tiempo de pantalla guardado."
+msg.screen_time_reset: "El tiempo de pantalla de hoy se ha puesto a cero."

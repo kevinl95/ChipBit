@@ -13,7 +13,7 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-TitleType = Literal["scummvm", "dosbox", "exec", "web", "ruffle"]
+TitleType = Literal["scummvm", "exec", "web", "ruffle"]
 SystemAction = Literal["home", "unlock", "shutdown", "volume"]
 DEFAULT_GAMES_ROOT = Path("/games")
 _DEFAULT_SCUMMVM_DATA_DIR = Path("scummvm")
@@ -45,7 +45,6 @@ class CatalogTitle:
     data: str | None = None
     data_dir: str | None = None
     game_id: str | None = None
-    conf: str | None = None
     cmd: tuple[str, ...] = ()
     url: str | None = None
     allowlist: tuple[str, ...] = ()
@@ -218,8 +217,6 @@ def resolve_title_content_path(
     """Resolve a title's catalog-declared content path against games_root."""
     if title.type == "scummvm":
         relative_path = Path(title.data_dir or _DEFAULT_SCUMMVM_DATA_DIR / title.id)
-    elif title.type == "dosbox" and title.conf is not None:
-        relative_path = Path(title.conf)
     elif title.type == "ruffle" and title.swf is not None:
         relative_path = Path(title.swf)
     else:
@@ -340,8 +337,6 @@ def _catalog_title_to_dict(title: CatalogTitle) -> dict[str, Any]:
         d["data_dir"] = title.data_dir
     if title.game_id is not None:
         d["game_id"] = title.game_id
-    if title.conf is not None:
-        d["conf"] = title.conf
     if title.cmd:
         d["cmd"] = list(title.cmd)
     if title.url is not None:
@@ -395,7 +390,7 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         return None
 
     raw_type = _non_empty_string(raw_title.get("type"))
-    if raw_type not in {"scummvm", "dosbox", "exec", "web", "ruffle"}:
+    if raw_type not in {"scummvm", "exec", "web", "ruffle"}:
         log.warning("Skipping catalog title '%s': invalid type %r", title_id, raw_type)
         return None
 
@@ -440,7 +435,6 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         return None
 
     game_id: str | None = None
-    conf: str | None = None
     cmd: tuple[str, ...] = ()
     url: str | None = None
     allowlist: tuple[str, ...] = ()
@@ -449,10 +443,6 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
     if raw_type == "scummvm":
         game_id = _optional_string(raw_title.get("game_id"), title_id, "game_id")
         if game_id is None:
-            return None
-    elif raw_type == "dosbox":
-        conf = _optional_string(raw_title.get("conf"), title_id, "conf")
-        if conf is None:
             return None
     elif raw_type == "exec":
         cmd = _parse_argv(raw_title.get("cmd"), title_id)
@@ -482,7 +472,6 @@ def _parse_catalog_title(raw_title: Any, index: int) -> CatalogTitle | None:
         data=data,
         data_dir=data_dir,
         game_id=game_id,
-        conf=conf,
         cmd=cmd,
         url=url,
         allowlist=allowlist,

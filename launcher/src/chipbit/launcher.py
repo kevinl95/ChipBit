@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
+from . import screentime
 from .models import (
     CardsConfig,
     Catalog,
@@ -47,7 +48,6 @@ class LaunchSettings:
     stop_grace_secs: float = DEFAULT_STOP_GRACE_SECS
     unlock_timeout_secs: float = DEFAULT_UNLOCK_TIMEOUT_SECS
     scummvm_bin: str = "scummvm"
-    dosbox_bin: str = "dosbox-staging"
     chromium_bin: str = "chromium"
     ruffle_bin: str = "ruffle"
     allow_shutdown: bool = False
@@ -147,6 +147,8 @@ class LauncherService:
         thread_factory: Callable[..., threading.Thread] | None = threading.Thread,
         monotonic: Callable[[], float] = time.monotonic,
         language_path: Path | None = None,
+        screen_time_limit_path: Path | None = None,
+        screen_time_usage_path: Path | None = None,
     ) -> None:
         self.config = config
         self.settings = settings or LaunchSettings()
@@ -157,6 +159,11 @@ class LauncherService:
         self._monotonic = monotonic
         self._generated_locales: frozenset[str] | None = None
         self._language_path = language_path
+        self._screen_time_limit_path = screen_time_limit_path
+        self._screen_time_usage_path = screen_time_usage_path
+        # Monotonic reading at the last accrual, or None when nothing is
+        # running.  Monotonic so a clock change cannot hand back free time.
+        self._screen_time_mark: float | None = None
 
         self._lock = threading.RLock()
         self._current_process: object | None = None
@@ -252,6 +259,7 @@ class LauncherService:
 
     def stop_current(self) -> None:
         """Stop the current child process group, escalating if needed."""
+        self._accrue_screen_time()
         with self._lock:
             process = self._current_process
 
@@ -326,6 +334,10 @@ class LauncherService:
                 "cards": len(self.config.cards.title_cards),
                 "capture_mode": self._capture_armed,
                 "last_event": self._last_event_locked(),
+                "screen_time": screentime.snapshot(
+                    screentime.read_limit(self._screen_time_limit_path),
+                    screentime.read_usage(self._screen_time_usage_path),
+                ),
             }
 
     def cards_snapshot(self) -> dict[str, dict[str, str]]:
@@ -333,6 +345,15 @@ class LauncherService:
         return self.config.cards_snapshot()
 
     def _launch_title(self, title: CatalogTitle) -> None:
+        if screentime.is_exhausted(
+            screentime.read_limit(self._screen_time_limit_path),
+            screentime.read_usage(self._screen_time_usage_path),
+        ):
+            # The admin card is a system action handled before we ever get
+            # here, so a parent can still unlock and change the limit.
+            log.info("screen time used up; refusing to launch %s", title.label)
+            return
+
         policy = self.settings.while_running
         if self.is_running():
             if policy in {"home_only", "ignore"}:
@@ -364,6 +385,7 @@ class LauncherService:
         with self._lock:
             self._current_process = process
             self._current_title = title
+            self._screen_time_mark = self._monotonic()
         log.info("launched %s (pid %d)", title.label, process.pid)
 
         if self._thread_factory is not None:
@@ -378,6 +400,48 @@ class LauncherService:
         process.wait()
         self._clear_current(process)
         log.info("app exited -> idle")
+
+    def screen_time(self) -> dict[str, object]:
+        """Today's allowance, usage and whether it has run out."""
+        limit = screentime.read_limit(self._screen_time_limit_path)
+        usage = screentime.read_usage(self._screen_time_usage_path)
+        return screentime.snapshot(limit, usage)
+
+    def _accrue_screen_time(self) -> None:
+        """Bank the time since the last accrual, if a title is running."""
+        with self._lock:
+            mark = self._screen_time_mark
+            running = (
+                self._current_process is not None
+                and self._current_process.poll() is None
+            )
+            now = self._monotonic()
+            self._screen_time_mark = now if running else None
+        if mark is None or not running:
+            return
+        elapsed = now - mark
+        if elapsed <= 0:
+            return
+        screentime.add_seconds(elapsed, self._screen_time_usage_path)
+
+    def tick_screen_time(self) -> bool:
+        """Bank elapsed time and stop the title if the allowance is gone.
+
+        Returns True if this tick ended a session.  Called on a timer rather
+        than at launch/stop alone, because the limit has to bite part way
+        through a long session, not only when one ends.
+        """
+        self._accrue_screen_time()
+        if not self.is_running():
+            return False
+        if not screentime.is_exhausted(
+            screentime.read_limit(self._screen_time_limit_path),
+            screentime.read_usage(self._screen_time_usage_path),
+        ):
+            return False
+        log.info("screen time used up; stopping current title")
+        self.stop_current()
+        return True
 
     def _clear_current(self, process: object) -> None:
         with self._lock:
@@ -474,11 +538,6 @@ def build_launch_argv(
             str(content_path),
             title.game_id,
         ]
-    if title.type == "dosbox":
-        content_path = resolve_title_content_path(title, games_root)
-        if content_path is None:
-            raise ValueError("dosbox title is missing a resolved content path")
-        return [settings.dosbox_bin, "-conf", str(content_path), "-fullscreen"]
     if title.type == "exec":
         return list(title.cmd)
     if title.type == "ruffle":
@@ -515,6 +574,27 @@ def build_launch_argv(
         "--user-data-dir=/tmp/chipbit-web-app",
         f"--app={title.url or ''}",
     ]
+
+
+DEFAULT_SCREEN_TIME_POLL_SECS = 20.0
+
+
+def poll_screen_time(
+    service: LauncherService,
+    stop: threading.Event,
+    poll_secs: float = DEFAULT_SCREEN_TIME_POLL_SECS,
+) -> None:
+    """Bank screen time and enforce the daily limit.
+
+    The interval is the worst-case overshoot past the limit, and also how much
+    usage a hard power-off can lose. Twenty seconds keeps both small without
+    writing to the SD card constantly.
+    """
+    while not stop.wait(poll_secs):
+        try:
+            service.tick_screen_time()
+        except Exception:
+            log.exception("screen time tick failed; continuing")
 
 
 def poll_config(

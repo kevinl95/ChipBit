@@ -14,7 +14,7 @@ SupplementaryGroups=input audio video
 # Display environment so launched apps can connect to the cage Wayland session.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
-# Route SDL2 apps (TuxPaint, DOSBox, ScummVM, etc.) through XWayland so cage
+# Route SDL2 apps (TuxPaint, ScummVM, etc.) through XWayland so cage
 # reliably surfaces their windows.  Direct SDL2-Wayland has fragile configure
 # handshake behaviour under cage — XWayland is stable and already running.
 Environment=SDL_VIDEODRIVER=x11

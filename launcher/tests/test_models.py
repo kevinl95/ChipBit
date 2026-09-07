@@ -236,11 +236,6 @@ def test_resolve_title_content_path_uses_games_root_and_scummvm_default() -> Non
         type="scummvm",
         game_id="puttmoon",
     )
-    dosbox_title = catalog_title(
-        id="readerrabbit-dos",
-        type="dosbox",
-        conf="readerrabbit/rr.conf",
-    )
     ruffle_title = catalog_title(
         id="mathblaster-flash",
         type="ruffle",
@@ -249,9 +244,6 @@ def test_resolve_title_content_path_uses_games_root_and_scummvm_default() -> Non
 
     assert resolve_title_content_path(scummvm_title, settings.games_root) == Path(
         "/mnt/games/scummvm/puttmoon"
-    )
-    assert resolve_title_content_path(dosbox_title, settings.games_root) == Path(
-        "/mnt/games/readerrabbit/rr.conf"
     )
     assert resolve_title_content_path(ruffle_title, settings.games_root) == Path(
         "/mnt/games/flash/mathblaster.swf"
@@ -430,6 +422,5 @@ def catalog_title(
         type=type,
         bundled=bundled,
         game_id=game_id,
-        conf=conf,
         swf=swf,
     )

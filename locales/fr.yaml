@@ -37,6 +37,9 @@ kiosk.unknown.body: "Cette carte n'est pas encore configurée."
 kiosk.unknown.body_uid: >-
   Cette carte n'est pas encore configurée. La carte {uid} peut être ajoutée
   dans la console parent.
+kiosk.quota.title: "C'est fini pour aujourd'hui"
+kiosk.quota.body: >-
+  Le temps d'écran est terminé. Demande à un adulte s'il t'en faut plus.
 kiosk.offline.title: "Reconnexion à ChipBit"
 kiosk.offline.body: "Un instant."
 
@@ -103,7 +106,7 @@ console.cards.disable_confirm: "Empêcher cette carte de lancer quoi que ce soit
 console.files.heading: "Fichiers de jeu"
 console.files.body: >-
   Copiez les données de jeu depuis une clé USB vers <code>/games/</code> pour
-  que les titres ScummVM, DOSBox et Ruffle les trouvent.
+  que les titres ScummVM et Ruffle les trouvent.
 console.files.open: "Ouvrir l'explorateur de fichiers"
 
 console.custom.heading: "Ajouter les vôtres"
@@ -123,9 +126,6 @@ console.custom.scummvm.game_id: "Identifiant de jeu ScummVM"
 console.custom.scummvm.data_dir: >-
   Dossier de données sous /games/ (vide pour scummvm/&lt;nom&gt;)
 console.custom.scummvm.save: "Enregistrer la carte ScummVM"
-console.custom.dosbox.summary: "Un jeu DOSBox (données de jeu fournies par vous)"
-console.custom.dosbox.conf: "Chemin du fichier de configuration DOSBox sous /games/"
-console.custom.dosbox.save: "Enregistrer la carte DOSBox"
 console.custom.ruffle.summary: "Un jeu Flash (fichier .swf fourni par vous)"
 console.custom.ruffle.swf: "Chemin du .swf sous /games/"
 console.custom.ruffle.save: "Enregistrer la carte Ruffle"
@@ -162,7 +162,6 @@ files.mount: "Monter : {label}"
 files.copy_heading: "Copier ce dossier vers /games/"
 files.copy_type: "Type de jeu"
 files.copy_type.scummvm: "ScummVM"
-files.copy_type.dosbox: "DOSBox"
 files.copy_type.flash: "Flash / Ruffle"
 files.copy_type.other: "Autre"
 files.copy_dest: "Destination dans /games/"
@@ -250,3 +249,22 @@ work.done_no_unmount: >-
   Copié, mais le lecteur est encore occupé. Attendez quelques secondes avant
   de le retirer.
 work.failed: "Impossible de copier sur le lecteur : {detail}"
+
+# --- temps d'écran ---------------------------------------------------------
+console.screen_time.heading: "Temps d'écran"
+console.screen_time.body: >-
+  Une limite quotidienne sur la durée d'exécution des titres. L'écran
+  d'attente ne compte pas, et la carte admin fonctionne toujours, vous ne
+  pouvez donc jamais être bloqué dehors.
+console.screen_time.limit: "Minutes par jour"
+console.screen_time.off_hint: "0 signifie aucune limite."
+console.screen_time.save: "Enregistrer la limite"
+console.screen_time.used: "Utilisé aujourd'hui : {used} sur {limit} minutes."
+console.screen_time.used_no_limit: >-
+  Utilisé aujourd'hui : {used} minutes. Aucune limite définie.
+console.screen_time.exhausted: "Le temps d'écran d'aujourd'hui est épuisé."
+console.screen_time.reset: "Donner plus de temps aujourd'hui"
+console.screen_time.reset_confirm: >-
+  Remettre à zéro le temps d'écran d'aujourd'hui ?
+msg.screen_time_saved: "Limite de temps d'écran enregistrée."
+msg.screen_time_reset: "Le temps d'écran d'aujourd'hui a été remis à zéro."

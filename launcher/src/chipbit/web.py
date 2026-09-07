@@ -25,6 +25,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
+from . import screentime
 from .installer import (
     DataMissingError,
     InstallationError,
@@ -170,33 +171,6 @@ def _reboot_after_delay(runner: CommandRunner, delay: float = 2.0) -> None:
 def _unescape_mount_path(s: str) -> str:
     """Decode octal escapes in a /proc/mounts field (e.g. \\040 → space)."""
     return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1), 8)), s)
-
-
-_DOS_SKIP_EXES: frozenset[str] = frozenset({
-    "install.exe", "setup.exe", "setup.com", "uninst.exe", "unins000.exe",
-    "dos4gw.exe", "dos32a.exe", "cwsdpmi.exe", "dpmi16bi.ovl",
-    "install.bat", "setup.bat", "autorun.bat", "autoexec.bat",
-})
-
-
-def _find_dos_executable(game_dir: Path) -> str | None:
-    """Return the most likely game-launch filename in a DOS game directory."""
-    candidates: list[str] = []
-    try:
-        for f in game_dir.iterdir():
-            if not f.is_file():
-                continue
-            if (
-                f.suffix.lower() in (".exe", ".com", ".bat")
-                and f.name.lower() not in _DOS_SKIP_EXES
-            ):
-                candidates.append(f.name.upper())
-    except OSError:
-        return None
-    if not candidates:
-        return None
-    candidates.sort(key=lambda n: (n.endswith(".BAT"), n))
-    return candidates[0]
 
 
 def _copytree_permissive(src: Path, dst: Path) -> None:
@@ -645,6 +619,18 @@ PAGE_CSS = dedent("""
     }
     details[open] summary::before { content: "\\2212"; }
     details[open] > *:not(summary) { margin-top: var(--s3); }
+
+    /* Screen time is the setting a parent most often comes here to change,
+       so it sits above the tiles and is boxed rather than buried in Settings. */
+    .screen-time {
+      border: 2px solid var(--ink);
+      border-radius: 10px;
+      padding: var(--s4);
+      box-shadow: 4px 4px 0 rgba(26, 26, 25, 0.14);
+      background: var(--card);
+    }
+    .screen-time h2 { border-bottom-color: var(--ink); }
+    .screen-time-used { margin: var(--s3) 0 0; font-weight: 600; }
 
     /* --- the child's work ----------------------------------------------- */
     /* Pictures, not filenames: a parent recognises the drawing long before
@@ -1440,6 +1426,8 @@ class WebApp:
     # real home directory.
     home_path: Path | None = None
     state_path: Path | None = None
+    screen_time_limit_path: Path | None = None
+    screen_time_usage_path: Path | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -1787,6 +1775,29 @@ class WebApp:
                 posix_locale,
                 (getattr(result, "stderr", "") or "").strip(),
             )
+
+    def set_screen_time_limit(self, raw: str) -> str:
+        """Store the daily allowance, in minutes. 0 turns the limit off."""
+        text = (raw or "").strip()
+        if not text:
+            text = "0"
+        try:
+            minutes = int(text)
+        except ValueError as exc:
+            raise ValueError(f"screen time limit must be a number: {raw!r}") from exc
+        if minutes < 0:
+            raise ValueError("screen time limit cannot be negative")
+        screentime.write_limit(minutes, self.screen_time_limit_path)
+        return t("msg.screen_time_saved")
+
+    def reset_screen_time(self) -> str:
+        """Clear today's usage.
+
+        The way a parent grants "five more minutes" without also moving
+        tomorrow's allowance, which editing the limit would do.
+        """
+        screentime.reset_usage(self.screen_time_usage_path)
+        return t("msg.screen_time_reset")
 
     def set_keyboard_layout(self, layout: str) -> str:
         _VALID_LAYOUTS = {"us", "gb", "de", "fr", "es", "it", "pt", "nl"}
@@ -2156,7 +2167,7 @@ class WebApp:
         label = form.get("label", "").strip()
         if not label:
             raise ValueError("title name is required")
-        if title_type not in {"web", "exec", "scummvm", "dosbox", "ruffle"}:
+        if title_type not in {"web", "exec", "scummvm", "ruffle"}:
             raise ValueError(f"invalid type: {title_type!r}")
 
         title_id = self._unique_title_id(
@@ -2194,14 +2205,6 @@ class WebApp:
                 bundled=False, game_id=game_id,
                 data_dir=data_dir,
                 install={"apt": ("scummvm",)},
-            )
-        elif title_type == "dosbox":
-            conf = form.get("conf", "").strip()
-            if not conf:
-                raise ValueError("config file path is required")
-            title = CatalogTitle(
-                id=title_id, label=label, type="dosbox",
-                bundled=False, data="required", conf=conf,
             )
         else:  # ruffle
             swf = form.get("swf", "").strip()
@@ -2337,7 +2340,6 @@ class WebApp:
                 <label>{t('files.copy_type')}
                   <select id="copy-type">
                     <option value="scummvm">{t('files.copy_type.scummvm')}</option>
-                    <option value="dosbox">{t('files.copy_type.dosbox')}</option>
                     <option value="flash">{t('files.copy_type.flash')}</option>
                     <option value="">{t('files.copy_type.other')}</option>
                   </select>
@@ -2937,13 +2939,6 @@ class WebApp:
                 if game_id:
                     pf["game_id"] = game_id
             return pf
-        if parts and parts[0] == "dosbox" and not dest_rel.endswith(".conf"):
-            pf: dict[str, str] = {"type": "dosbox", "label": label}
-            if games_root is not None:
-                conf_rel = self._generate_dosbox_conf(games_root / dest_rel, dest_rel)
-                if conf_rel:
-                    pf["conf"] = conf_rel
-            return pf
         if (parts and parts[0] == "flash") or dest_rel.lower().endswith(".swf"):
             swf_path = dest_rel
             if games_root is not None and not dest_rel.lower().endswith(".swf"):
@@ -2958,8 +2953,6 @@ class WebApp:
                         except ValueError:
                             pass
             return {"type": "ruffle", "swf": swf_path, "label": label}
-        if dest_rel.endswith(".conf"):
-            return {"type": "dosbox", "conf": dest_rel, "label": label}
         return {"type": "exec", "label": label}
 
     def _detect_scummvm_game_id(self, content_path: Path) -> str | None:
@@ -2977,30 +2970,6 @@ class WebApp:
             if m:
                 return m.group(1)
         return None
-
-    def _generate_dosbox_conf(self, game_dir: Path, dest_rel: str) -> str | None:
-        """Write a minimal dosbox.conf next to game_dir.
-
-        Returns the conf path relative to games_root.
-        """
-        exe = _find_dos_executable(game_dir)
-        conf_path = game_dir.parent / (game_dir.name + ".conf")
-        conf_rel = str(Path(dest_rel).parent / (game_dir.name + ".conf"))
-        autoexec = [f"mount c {game_dir}", "c:"]
-        if exe:
-            autoexec.append(exe)
-        autoexec.append("exit")
-        conf_text = (
-            "[SDL]\nfullscreen=true\n\n"
-            "[dosbox]\nmemsize=16\n\n"
-            "[autoexec]\n" + "\n".join(autoexec) + "\n"
-        )
-        try:
-            conf_path.write_text(conf_text)
-            conf_path.chmod(0o644)
-        except OSError:
-            return None
-        return conf_rel
 
     def _require_unlocked(self, cards: CardsConfig) -> None:
         if "unlock" not in cards.system_cards:
@@ -3104,6 +3073,29 @@ class WebApp:
             for code in _KEYBOARD_LAYOUTS
         )
         shutdown_confirm = _js_in_attr(t("console.settings.shutdown_confirm"))
+        screen_time_limit = screentime.read_limit(self.screen_time_limit_path)
+        screen_time_usage = screentime.read_usage(self.screen_time_usage_path)
+        used_minutes = screen_time_usage.seconds // 60
+        if screen_time_limit <= 0:
+            screen_time_used = escape(
+                t("console.screen_time.used_no_limit", used=used_minutes)
+            )
+        elif screentime.is_exhausted(screen_time_limit, screen_time_usage):
+            screen_time_used = (
+                '<span class="chip wait">'
+                + escape(t("console.screen_time.exhausted"))
+                + "</span>"
+            )
+        else:
+            screen_time_used = escape(
+                t(
+                    "console.screen_time.used",
+                    used=used_minutes, limit=screen_time_limit,
+                )
+            )
+        screen_time_reset_confirm = _js_in_attr(
+            t("console.screen_time.reset_confirm")
+        )
         current_language = read_language(self.language_path)
         language_options = "".join(
             f'<option value="{choice.code}"'
@@ -3144,6 +3136,32 @@ class WebApp:
                   <span class="uid">{admin_uid}</span>
                 </span>
               </p>
+            </section>
+
+            <section class="block screen-time">
+              <h2>{t('console.screen_time.heading')}</h2>
+              <p class="muted">{t('console.screen_time.body')}</p>
+              <div class="row">
+                <form method="post" action="/settings/screen-time"
+                      class="inline-form">
+                  <label>{t('console.screen_time.limit')}
+                    <input type="number" name="minutes" min="0" max="1439"
+                           value="{screen_time_limit}" />
+                  </label>
+                  <button type="submit" class="btn-primary">
+                    {t('console.screen_time.save')}
+                  </button>
+                </form>
+                <form method="post" action="/settings/screen-time/reset"
+                      class="inline-form"
+                      onsubmit="return confirm('{screen_time_reset_confirm}')">
+                  <button type="submit" class="btn-quiet">
+                    {t('console.screen_time.reset')}
+                  </button>
+                </form>
+              </div>
+              <p class="small muted">{t('console.screen_time.off_hint')}</p>
+              <p class="screen-time-used">{screen_time_used}</p>
             </section>
 
             <section class="block">
@@ -3240,23 +3258,6 @@ class WebApp:
                   </label>
                   <button type="submit">
                     {t('console.custom.scummvm.save')}
-                  </button>
-                </form>
-              </details>
-              <details id="custom-dosbox">
-                <summary>{t('console.custom.dosbox.summary')}</summary>
-                <form method="post" action="/titles/custom" class="wifi-form">
-                  <input type="hidden" name="type" value="dosbox" />
-                  <label>{t('common.name')}
-                    <input type="text" name="label"
-                      placeholder="My DOS Game" required /></label>
-                  <label>
-                    {t('console.custom.dosbox.conf')}
-                    <input type="text" name="conf"
-                      placeholder="mygame/dosbox.conf" required />
-                  </label>
-                  <button type="submit">
-                    {t('console.custom.dosbox.save')}
                   </button>
                 </form>
               </details>
@@ -3470,8 +3471,6 @@ class WebApp:
             return "Native app"
         if title.type == "scummvm":
             return f"ScummVM title in {games_root}"
-        if title.type == "dosbox":
-            return f"DOSBox config under {games_root}"
         return f"Ruffle content under {games_root}"
 
     def _title_state(self, title: CatalogTitle, catalog: Catalog) -> str:
@@ -3534,10 +3533,23 @@ class WebApp:
                     else "/art/default"
                 ),
             }
-            return self._kiosk_flood(
-                kiosk,
-                current_id if isinstance(current_id, str) and current_id else current,
-            )
+            # current_id is always present: the daemon and this service ship
+            # in the same image. `or current` is only a None-guard.
+            return self._kiosk_flood(kiosk, current_id or current)
+
+        # Before the unknown-card and idle branches: a card that is bound but
+        # refused because the allowance is gone leaves no "unknown card" event,
+        # so without this the kiosk would just sit on "Tap a card" and a child
+        # would keep tapping a card that will never do anything.
+        screen_time = status.get("screen_time")
+        if isinstance(screen_time, dict) and screen_time.get("exhausted"):
+            return {
+                "kind": "quota",
+                "title": t("kiosk.quota.title"),
+                "body": t("kiosk.quota.body"),
+                "ink": "#0c6f78",
+                "on_ink": "#ffffff",
+            }
 
         last_event = status.get("last_event")
         if isinstance(last_event, dict) and last_event.get("kind") == "unknown-card":
@@ -3575,7 +3587,6 @@ class WebApp:
             title.type,
             title.game_id or "",
             title.data_dir or "",
-            title.conf or "",
             title.swf or "",
             str(catalog.settings.games_root),
         )
@@ -3710,6 +3721,8 @@ def create_web_server(
     user_catalog_path: Path | None = None,
     language_path: Path | None = None,
     locale_dirs: tuple[Path, ...] | None = None,
+    screen_time_limit_path: Path | None = None,
+    screen_time_usage_path: Path | None = None,
     games_root: Path = Path("/games"),
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
@@ -3726,6 +3739,8 @@ def create_web_server(
         user_catalog_path=user_catalog_path,
         language_path=language_path,
         locale_dirs=locale_dirs,
+        screen_time_limit_path=screen_time_limit_path,
+        screen_time_usage_path=screen_time_usage_path,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -4056,6 +4071,10 @@ def create_web_server(
                     message = app.remove_card(uid)
                 elif path == "/settings/reload":
                     message = app.reload_daemon()
+                elif path == "/settings/screen-time":
+                    message = app.set_screen_time_limit(form.get("minutes", ""))
+                elif path == "/settings/screen-time/reset":
+                    message = app.reset_screen_time()
                 elif path == "/settings/keyboard":
                     message = app.set_keyboard_layout(form.get("layout", ""))
                 elif path == "/settings/language":

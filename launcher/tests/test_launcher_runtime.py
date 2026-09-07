@@ -322,22 +322,6 @@ def test_first_scan_auto_enrolls_admin_card_when_no_admin_exists(
         ),
         (
             CatalogTitle(
-                id="readerrabbit-dos",
-                label="Reader Rabbit",
-                type="dosbox",
-                bundled=False,
-                data="required",
-                conf="readerrabbit/rr.conf",
-            ),
-            [
-                "dosbox-staging",
-                "-conf",
-                "/games/readerrabbit/rr.conf",
-                "-fullscreen",
-            ],
-        ),
-        (
-            CatalogTitle(
                 id="mathblaster-flash",
                 label="Math Blaster",
                 type="ruffle",
@@ -394,6 +378,7 @@ def make_service(
     unlock_uid: str | None = "12-34-56",
     unlock_timeout_secs: float = 300.0,
     monotonic=None,
+    screen_time_limit_minutes: int | None = None,
 ) -> tuple[
     LauncherService,
     PopenRecorder,
@@ -436,6 +421,10 @@ titles:
     def record_killpg(pgid: int, sig: signal.Signals) -> None:
         killpg_calls.append((pgid, sig))
 
+    limit_path = tmp_path / "screen_time_limit"
+    if screen_time_limit_minutes is not None:
+        limit_path.write_text(f"{screen_time_limit_minutes}\n", encoding="utf-8")
+
     service = LauncherService(
         config,
         settings=LaunchSettings(
@@ -448,6 +437,9 @@ titles:
         getpgid=lambda pid: pid + 5000,
         thread_factory=None,
         monotonic=time.monotonic if monotonic is None else monotonic,
+        # Never touch the real /var/lib/chipbit from a test.
+        screen_time_limit_path=limit_path,
+        screen_time_usage_path=tmp_path / "screen_time_usage",
     )
     return service, popen_recorder, killpg_calls, config
 
@@ -469,3 +461,92 @@ def build_cards_yaml(unlock_uid: str | None) -> str:
         '  home: "ff-ee-dd"\n'
         f"{unlock_line}"
     )
+
+
+# --- screen time enforcement ------------------------------------------------
+
+
+def test_no_limit_means_nothing_is_stopped(tmp_path: Path) -> None:
+    service, popen_recorder, killpg_calls, _ = make_service(tmp_path)
+    service.on_scan("AA-BB-CC")
+    assert len(popen_recorder.calls) == 1
+
+    service.tick_screen_time()
+    assert killpg_calls == [], "a device with no limit must never be interrupted"
+
+
+def test_a_running_title_is_stopped_once_the_allowance_runs_out(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock()
+    service, popen_recorder, killpg_calls, _ = make_service(
+        tmp_path, monotonic=clock, screen_time_limit_minutes=30
+    )
+    service.on_scan("AA-BB-CC")
+    assert len(popen_recorder.calls) == 1
+
+    # 29 minutes in, still fine
+    clock.current += 29 * 60
+    assert service.tick_screen_time() is False
+    assert killpg_calls == []
+
+    # past the half hour
+    clock.current += 2 * 60
+    assert service.tick_screen_time() is True
+    assert killpg_calls, "the title should have been stopped"
+
+
+def test_nothing_launches_once_the_allowance_is_gone(tmp_path: Path) -> None:
+    clock = FakeClock()
+    service, popen_recorder, _killpg, _ = make_service(
+        tmp_path, monotonic=clock, screen_time_limit_minutes=1
+    )
+    service.on_scan("AA-BB-CC")
+    clock.current += 120
+    service.tick_screen_time()
+    launched = len(popen_recorder.calls)
+
+    service.on_scan("AA-BB-CC")
+    assert len(popen_recorder.calls) == launched, "refused, not queued"
+    assert service.status()["screen_time"]["exhausted"] is True
+
+
+def test_the_admin_card_still_works_when_the_allowance_is_gone(
+    tmp_path: Path,
+) -> None:
+    """A parent must never be locked out of the console by the limit."""
+    clock = FakeClock()
+    service, _popen, _killpg, _ = make_service(
+        tmp_path, monotonic=clock, screen_time_limit_minutes=1
+    )
+    service.on_scan("AA-BB-CC")
+    clock.current += 120
+    service.tick_screen_time()
+    assert service.status()["screen_time"]["exhausted"] is True
+
+    service.on_scan("12-34-56")  # the unlock card
+    assert service.status()["unlocked"] is True
+
+
+def test_idle_time_is_not_charged(tmp_path: Path) -> None:
+    """A Pi left on in a family room must not eat the allowance."""
+    clock = FakeClock()
+    service, _popen, _killpg, _ = make_service(
+        tmp_path, monotonic=clock, screen_time_limit_minutes=30
+    )
+    clock.current += 3600
+    service.tick_screen_time()
+    assert service.status()["screen_time"]["used_seconds"] == 0
+
+
+def test_stopping_banks_the_final_stretch(tmp_path: Path) -> None:
+    """Otherwise a session shorter than the tick interval would be free."""
+    clock = FakeClock()
+    service, _popen, _killpg, _ = make_service(
+        tmp_path, monotonic=clock, screen_time_limit_minutes=30
+    )
+    service.on_scan("AA-BB-CC")
+    clock.current += 45
+    service.stop_current()
+    assert service.status()["screen_time"]["used_seconds"] == 45
+

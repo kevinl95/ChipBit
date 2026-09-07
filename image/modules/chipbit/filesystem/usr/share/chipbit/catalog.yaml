@@ -14,7 +14,7 @@
 #                    the share / USB ingest workflow.
 #   id        (req)  stable key, referenced by cards.yaml
 #   label     (req)  display name in the enroll UI and loading screen
-#   type      (req)  scummvm | dosbox | exec | web | ruffle
+#   type      (req)  scummvm | exec | web | ruffle
 #   bundled   (req)  true = pre-installed in the image; false = install on enroll
 #   install          declarative install spec: a map of manager -> packages.
 #                    Only `apt`, `flatpak`, `pip` are honored. NEVER shell —
@@ -31,14 +31,13 @@
 #     scummvm -> game_id + data_dir
 #                `id` names the folder/UI key; `game_id` is ScummVM's internal
 #                detector/launcher id. They are never interchangeable.
-#     dosbox  -> conf            (path under settings.games_root)
 #     exec    -> cmd             (argv list, never a shell string)
 #     web     -> url + allowlist
 #     ruffle  -> swf             (path under settings.games_root)
 #   Optional curation metadata (shown when browsing to enroll):
 #     subject, min_age, blurb, art
 #
-# NOTE: the engines themselves (scummvm, dosbox-staging, ruffle) and the kiosk
+# NOTE: the engines themselves (scummvm, ruffle) and the kiosk
 # browser are base dependencies installed by the CustomPiOS module, not titles
 # here. The catalog lists only user-facing titles.
 
@@ -68,11 +67,9 @@ titles:
     bundled: true
     install: { apt: [tuxpaint, tuxpaint-stamps-default] }
     cmd: ["tuxpaint", "--nosound", "--savedir=/var/lib/chipbit/tuxpaint"]
-    # Must match --savedir above: that is where the drawings actually land, and
-    # it is what "Your child's work" backs up.  ~/.tuxpaint is kept for config
-    # written by TuxPaint versions that ignore --savedir; missing dirs are
-    # skipped, so listing both is free.
-    user_dirs: ["/var/lib/chipbit/tuxpaint", ".tuxpaint"]
+    # Must match --savedir above: that is where the drawings actually land,
+    # and it is what "Your child's work" backs up.
+    user_dirs: ["/var/lib/chipbit/tuxpaint"]
     subject: art
     min_age: 3
     blurb: "Creative painting for young children."
@@ -168,5 +165,5 @@ titles:
     art: /art/pbskids.png
 
   # --- User-supplied content (parent adds data; enrolled via wizard) -------
-  # ScummVM, DOSBox, Ruffle, and custom web/exec entries are added through
+  # ScummVM, Ruffle, and custom web/exec entries are added through
   # the parent console wizard and stored in /var/lib/chipbit/user-catalog.yaml.

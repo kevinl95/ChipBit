@@ -480,7 +480,7 @@ def has_required_data(
             title.game_id,
         )
 
-    if title.type in {"dosbox", "ruffle"}:
+    if title.type == "ruffle":
         return content_path.exists()
 
     return False

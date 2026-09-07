@@ -38,6 +38,7 @@ class FakeControlState:
     capture_mode: bool = False
     running: bool = False
     current: str | None = None
+    current_id: str | None = None
     current_art: str | None = None
     last_event: dict[str, object] | None = None
     reload_calls: int = 0
@@ -48,6 +49,7 @@ class FakeControlState:
         return {
             "running": self.running,
             "current": self.current,
+            "current_id": self.current_id,
             "current_art": self.current_art,
             "unlocked": self.unlocked,
             "cards": 0,
@@ -248,6 +250,7 @@ system:
             control_state.capture_mode = False
             control_state.running = True
             control_state.current = "Demo App"
+            control_state.current_id = "demo"
             control_state.current_art = "/art/demo-app.png"
             loading = read_sse_payload(f"{web_url}/events")
 
@@ -277,8 +280,7 @@ system:
         "on_ink": enroll_on_ink,
     }
 
-    # No current_id from this daemon, so the ink falls back to the label.
-    loading_ink, loading_on_ink = web_module.ink_for("Demo App")
+    loading_ink, loading_on_ink = web_module.ink_for("demo")
     assert loading["kiosk"] == {
         "kind": "loading",
         "title": "Demo App",

@@ -92,6 +92,9 @@ STRINGS: dict[str, str] = {
         "This card isn't set up yet. Card {uid} can be added in the "
         "parent console."
     ),
+    # Shown when the daily screen-time allowance has run out.
+    "kiosk.quota.title": "All done for today",
+    "kiosk.quota.body": "Screen time is finished. Ask a grown-up if you need more.",
     # Shown by the kiosk's own JavaScript when the event stream drops.
     "kiosk.offline.title": "Reconnecting to ChipBit",
     "kiosk.offline.body": "Just a moment.",
@@ -142,6 +145,23 @@ STRINGS: dict[str, str] = {
     "console.cards.disable": "Disable",
     "console.cards.disable_confirm": "Stop this card launching anything?",
     # --- backing up a child's work ---------------------------------------
+    # --- screen time ------------------------------------------------------
+    "console.screen_time.heading": "Screen time",
+    "console.screen_time.body": (
+        "A daily limit on how long titles can run. The idle screen doesn't "
+        "count, and the admin card always works, so you can never lock "
+        "yourself out."
+    ),
+    "console.screen_time.limit": "Minutes per day",
+    "console.screen_time.off_hint": "Set to 0 for no limit.",
+    "console.screen_time.save": "Save limit",
+    "console.screen_time.used": "Used today: {used} of {limit} minutes.",
+    "console.screen_time.used_no_limit": "Used today: {used} minutes. No limit set.",
+    "console.screen_time.exhausted": "Today's screen time is used up.",
+    "console.screen_time.reset": "Give more time today",
+    "console.screen_time.reset_confirm": "Clear today's screen time usage?",
+    "msg.screen_time_saved": "Screen time limit saved.",
+    "msg.screen_time_reset": "Today's screen time has been cleared.",
     "console.work.heading": "Your child's work",
     "console.work.body": (
         "Drawings and other files the activities have saved. Copy them to a "
@@ -177,8 +197,8 @@ STRINGS: dict[str, str] = {
     "work.failed": "Could not copy to the drive: {detail}",
     "console.files.heading": "Game files",
     "console.files.body": (
-        "Copy game data from a USB drive into <code>/games/</code> so ScummVM, "
-        "DOSBox, and Ruffle titles can find it."
+        "Copy game data from a USB drive into <code>/games/</code> so ScummVM "
+        "and Ruffle titles can find it."
     ),
     "console.files.open": "Open the file browser",
     "console.custom.heading": "Add your own",
@@ -200,9 +220,6 @@ STRINGS: dict[str, str] = {
         "Data folder under /games/ (blank for scummvm/&lt;name&gt;)"
     ),
     "console.custom.scummvm.save": "Save ScummVM card",
-    "console.custom.dosbox.summary": "A DOSBox game (you supply the game data)",
-    "console.custom.dosbox.conf": "DOSBox config file path under /games/",
-    "console.custom.dosbox.save": "Save DOSBox card",
     "console.custom.ruffle.summary": "A Flash game (you supply the .swf)",
     "console.custom.ruffle.swf": "SWF path under /games/",
     "console.custom.ruffle.save": "Save Ruffle card",
@@ -239,7 +256,6 @@ STRINGS: dict[str, str] = {
     "files.copy_heading": "Copy this folder to /games/",
     "files.copy_type": "Game type",
     "files.copy_type.scummvm": "ScummVM",
-    "files.copy_type.dosbox": "DOSBox",
     "files.copy_type.flash": "Flash / Ruffle",
     "files.copy_type.other": "Other",
     "files.copy_dest": "Destination in /games/",

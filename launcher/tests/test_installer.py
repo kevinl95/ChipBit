@@ -335,14 +335,6 @@ def test_has_required_data_uses_scummvm_detect_with_data_dir(tmp_path: Path) -> 
     "title",
     [
         CatalogTitle(
-            id="readerrabbit-dos",
-            label="Reader Rabbit",
-            type="dosbox",
-            bundled=False,
-            data="required",
-            conf="readerrabbit/rr.conf",
-        ),
-        CatalogTitle(
             id="mathblaster-flash",
             label="Math Blaster",
             type="ruffle",
@@ -358,7 +350,7 @@ def test_has_required_data_checks_engine_paths_exist(
 ) -> None:
     games_root = tmp_path / "games"
     games_root.mkdir()
-    path_parts = title.conf if title.conf is not None else title.swf
+    path_parts = title.swf
     assert path_parts is not None
     (games_root / path_parts).parent.mkdir(parents=True, exist_ok=True)
     (games_root / path_parts).write_text("present", encoding="utf-8")

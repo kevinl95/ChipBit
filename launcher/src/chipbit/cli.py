@@ -22,6 +22,7 @@ from .launcher import (
     LauncherService,
     LaunchSettings,
     poll_config,
+    poll_screen_time,
 )
 from .models import ConfigLoadError, load_cards, load_catalog_merged
 from .reader import EvdevReader, MockReader, find_rfid_reader, pump_reader
@@ -50,6 +51,18 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         help="File holding the parent's language choice (for launched titles).",
     )
     parser.add_argument(
+        "--screen-time-limit-file",
+        type=Path,
+        default=None,
+        help="File holding the daily screen time limit, in minutes.",
+    )
+    parser.add_argument(
+        "--screen-time-usage-file",
+        type=Path,
+        default=None,
+        help="File holding how much screen time has been used today.",
+    )
+    parser.add_argument(
         "--mock-reader",
         nargs="?",
         const="-",
@@ -75,7 +88,6 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_UNLOCK_TIMEOUT_SECS,
     )
     parser.add_argument("--scummvm-bin", default="scummvm")
-    parser.add_argument("--dosbox-bin", default="dosbox-staging")
     parser.add_argument("--chromium-bin", default="chromium")
     parser.add_argument("--ruffle-bin", default="ruffle")
     parser.add_argument("--allow-shutdown", action="store_true")
@@ -109,12 +121,13 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
     service = LauncherService(
         config,
         language_path=args.language_file,
+        screen_time_limit_path=args.screen_time_limit_file,
+        screen_time_usage_path=args.screen_time_usage_file,
         settings=LaunchSettings(
             while_running=args.while_running,
             stop_grace_secs=args.stop_grace_secs,
             unlock_timeout_secs=args.unlock_timeout_secs,
             scummvm_bin=args.scummvm_bin,
-            dosbox_bin=args.dosbox_bin,
             chromium_bin=args.chromium_bin,
             ruffle_bin=args.ruffle_bin,
             allow_shutdown=args.allow_shutdown,
@@ -129,6 +142,12 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         daemon=True,
     )
     poll_thread.start()
+    screen_time_thread = threading.Thread(
+        target=poll_screen_time,
+        args=(service, stop),
+        daemon=True,
+    )
+    screen_time_thread.start()
     control_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     control_thread.start()
     log.info("control API on %s:%d", args.control_host, httpd.server_port)
@@ -187,6 +206,18 @@ def web_main(
         help="File holding the parent's language choice.",
     )
     parser.add_argument(
+        "--screen-time-limit-file",
+        type=Path,
+        default=None,
+        help="File holding the daily screen time limit, in minutes.",
+    )
+    parser.add_argument(
+        "--screen-time-usage-file",
+        type=Path,
+        default=None,
+        help="File holding how much screen time has been used today.",
+    )
+    parser.add_argument(
         "--locales-dir",
         type=Path,
         action="append",
@@ -236,6 +267,8 @@ def web_main(
         user_catalog_path=args.user_catalog,
         language_path=args.language_file,
         locale_dirs=locale_dirs,
+        screen_time_limit_path=args.screen_time_limit_file,
+        screen_time_usage_path=args.screen_time_usage_file,
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

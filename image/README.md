@@ -107,10 +107,10 @@ It updates in real time via SSE as you type UIDs in the launcher terminal.
 ### Prerequisites
 
 - [CustomPiOS](https://github.com/guysoft/CustomPiOS) checked out locally
-- A Raspberry Pi OS **Bookworm lite** base image (`.img.xz`) — use **arm64**
-  for Pi 4/5/500, **armhf** for Pi 400 or older hardware. Lite is intentional:
-  `cage` is a single-application Wayland compositor that talks directly to the
-  GPU's DRM/KMS layer and needs no desktop environment
+- A Raspberry Pi OS **Bookworm lite arm64** base image (`.img.xz`). Every Pi
+  ChipBit supports (400, 500, 4, 5) is 64-bit. Lite is intentional: `cage` is a
+  single-application Wayland compositor that talks directly to the GPU's
+  DRM/KMS layer and needs no desktop environment
 - A Linux host with `qemu-user-static` and binfmt support installed, or Docker
 
 ### Build
@@ -122,10 +122,9 @@ It updates in real time via SSE as you type UIDs in the launcher terminal.
 echo "/path/to/CustomPiOS/src" > image/custompios_path
 
 # 2. Tell it where your downloaded Pi OS base image is.
-#    armhf for Pi 3/400/older, arm64 for Pi 4/5/500.
 cat > image/config.local << 'EOF'
-export BASE_ZIP_IMG="/path/to/2026-04-13-raspios-bookworm-armhf-lite.img.xz"
-# export BASE_ARCH=arm64   # uncomment for arm64 image
+export BASE_ARCH=arm64
+export BASE_ZIP_IMG="/path/to/2026-04-13-raspios-bookworm-arm64-lite.img.xz"
 EOF
 ```
 
@@ -139,13 +138,13 @@ sudo bash image/build_dist
 hands off to `build_custom_os`. CustomPiOS copies `modules/chipbit/filesystem/`
 into the chroot as `/filesystem/`; `start_chroot_script` then merges that into
 the root at startup with `cp -a /filesystem/. /`. The Ruffle binary is selected
-automatically for the chroot architecture (aarch64 or x86_64; skipped on armhf).
+automatically for the chroot architecture.
 
 The resulting image is written to `image/workspace/<base-image-name>.img`.
 Flash it to an SD card:
 
 ```bash
-sudo dd if=image/workspace/2026-04-13-raspios-bookworm-armhf-lite.img \
+sudo dd if=image/workspace/2026-04-13-raspios-bookworm-arm64-lite.img \
      of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
@@ -166,7 +165,7 @@ Or use Raspberry Pi Imager → "Use custom image" and point it at that file.
 ## What `start_chroot_script` does
 
 1. Merges the `/filesystem/` overlay into `/` (CustomPiOS stages it there, not at root).
-2. Installs `cage`, `scummvm`, `dosbox-staging`, `chromium-browser`, and Ruffle (aarch64/x86_64 only).
+2. Installs `cage`, `scummvm`, `chromium-browser`, and Ruffle (aarch64/x86_64 only).
 3. Runs `emit_bundled_apt.py catalog.yaml` to get the apt list for every title
    with `bundled: true` — the catalog is the single source of truth.
 4. Creates the `chipbit` system user (UID/GID 900) in `input`, `audio`, and `video` groups.

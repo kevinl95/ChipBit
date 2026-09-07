@@ -39,6 +39,10 @@ kiosk.unknown.body: "Diese Karte ist noch nicht eingerichtet."
 kiosk.unknown.body_uid: >-
   Diese Karte ist noch nicht eingerichtet. Karte {uid} kann in der
   Elternkonsole hinzugefügt werden.
+kiosk.quota.title: "Für heute ist Schluss"
+kiosk.quota.body: >-
+  Die Bildschirmzeit ist aufgebraucht. Frag einen Erwachsenen, wenn du mehr
+  brauchst.
 kiosk.offline.title: "Verbinde neu mit ChipBit"
 kiosk.offline.body: "Einen Moment."
 
@@ -106,7 +110,7 @@ console.cards.disable_confirm: "Soll diese Karte nichts mehr starten?"
 console.files.heading: "Spieldateien"
 console.files.body: >-
   Kopiere Spieldaten von einem USB-Stick nach <code>/games/</code>, damit
-  ScummVM-, DOSBox- und Ruffle-Titel sie finden.
+  ScummVM- und Ruffle-Titel sie finden.
 console.files.open: "Dateibrowser öffnen"
 
 console.custom.heading: "Eigene hinzufügen"
@@ -126,9 +130,6 @@ console.custom.scummvm.game_id: "ScummVM-Spiel-ID"
 console.custom.scummvm.data_dir: >-
   Datenordner unter /games/ (leer lassen für scummvm/&lt;name&gt;)
 console.custom.scummvm.save: "ScummVM-Karte speichern"
-console.custom.dosbox.summary: "Ein DOSBox-Spiel (Spieldaten stellst du bereit)"
-console.custom.dosbox.conf: "Pfad der DOSBox-Konfigurationsdatei unter /games/"
-console.custom.dosbox.save: "DOSBox-Karte speichern"
 console.custom.ruffle.summary: "Ein Flash-Spiel (.swf stellst du bereit)"
 console.custom.ruffle.swf: "Pfad der .swf-Datei unter /games/"
 console.custom.ruffle.save: "Ruffle-Karte speichern"
@@ -165,7 +166,6 @@ files.mount: "Einbinden: {label}"
 files.copy_heading: "Diesen Ordner nach /games/ kopieren"
 files.copy_type: "Spieltyp"
 files.copy_type.scummvm: "ScummVM"
-files.copy_type.dosbox: "DOSBox"
 files.copy_type.flash: "Flash / Ruffle"
 files.copy_type.other: "Andere"
 files.copy_dest: "Ziel in /games/"
@@ -254,3 +254,21 @@ work.done_no_unmount: >-
   Kopiert, aber das Laufwerk ist noch beschäftigt. Warte ein paar Sekunden,
   bevor du es abziehst.
 work.failed: "Kopieren auf das Laufwerk fehlgeschlagen: {detail}"
+
+# --- Bildschirmzeit --------------------------------------------------------
+console.screen_time.heading: "Bildschirmzeit"
+console.screen_time.body: >-
+  Ein Tageslimit dafür, wie lange Titel laufen dürfen. Der Ruhebildschirm
+  zählt nicht, und die Admin-Karte funktioniert immer, du kannst dich also nie
+  aussperren.
+console.screen_time.limit: "Minuten pro Tag"
+console.screen_time.off_hint: "0 bedeutet kein Limit."
+console.screen_time.save: "Limit speichern"
+console.screen_time.used: "Heute genutzt: {used} von {limit} Minuten."
+console.screen_time.used_no_limit: >-
+  Heute genutzt: {used} Minuten. Kein Limit gesetzt.
+console.screen_time.exhausted: "Die Bildschirmzeit für heute ist aufgebraucht."
+console.screen_time.reset: "Heute mehr Zeit geben"
+console.screen_time.reset_confirm: "Die heutige Bildschirmzeit zurücksetzen?"
+msg.screen_time_saved: "Bildschirmzeit-Limit gespeichert."
+msg.screen_time_reset: "Die heutige Bildschirmzeit wurde zurückgesetzt."

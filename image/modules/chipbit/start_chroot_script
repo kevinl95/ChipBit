@@ -107,16 +107,6 @@ for _attempt in 1 2 3; do
     sleep 60
 done
 
-# dosbox-staging is not available in all Pi OS repo flavours (notably armhf).
-# Fall back to the original dosbox and symlink it so the launcher service
-# always resolves --dosbox-bin dosbox-staging without extra config.
-if apt-cache show dosbox-staging > /dev/null 2>&1; then
-    apt-get install -y --no-install-recommends dosbox-staging
-else
-    apt-get install -y --no-install-recommends dosbox
-    ln -sf "$(command -v dosbox)" /usr/local/bin/dosbox-staging
-fi
-
 # Ruffle (Flash player) — self-hosted web bundle (JS + WASM) rather than
 # the desktop binary, which requires glibc 2.39 but Bookworm ships 2.36.
 # The launcher opens player.html via file:// with --allow-file-access-from-files
