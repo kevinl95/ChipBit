@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -486,7 +487,13 @@ def run_web_server(
     user_catalog_path: Path | None = None,
     language_path: Path | None = None,
     locale_dirs: tuple[Path, ...] | None = None,
+    setup_complete: bool = True,
 ):
+    markers = Path(tempfile.mkdtemp())
+    wifi_setup_path = markers / "wifi_setup_done"
+    if setup_complete:
+        wifi_setup_path.touch()
+
     server = create_web_server(
         "127.0.0.1",
         0,
@@ -497,6 +504,8 @@ def run_web_server(
         user_catalog_path=user_catalog_path,
         language_path=language_path,
         locale_dirs=locale_dirs,
+        wifi_country_path=markers / "wifi_country",
+        wifi_setup_path=wifi_setup_path,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1198,4 +1207,56 @@ def test_sync_is_targeted_at_the_drive_not_the_whole_machine(
     _await_export(app, app.start_work_export(str(drive)))
     assert ["sync", "-f", str(drive)] in ran
     assert ["sync"] not in ran
+
+
+def test_a_card_tapped_on_the_language_screen_cannot_skip_wifi_setup(
+    tmp_path: Path,
+) -> None:
+    """Regression: the daemon enrolls the first card it ever sees, whatever is
+    on screen. Tapping one during language selection claimed the admin slot,
+    so the first-run page never rendered, its redirect to /setup never fired,
+    and the parent landed in the console having never been offered Wi-Fi.
+    """
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    # the state the stray tap leaves behind: admin card enrolled, setup unstarted
+    cards_path.write_text(
+        'system:\n  unlock: "aa-bb-cc"\ncards: {}\n', encoding="utf-8"
+    )
+    locales = _locale_fixture(tmp_path)
+    language = tmp_path / "language"
+    language.write_text("en\n", encoding="utf-8")
+
+    with run_control_server(FakeControlState(unlocked=True)) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url,
+            language_path=language, locale_dirs=locales,
+            setup_complete=False,
+        ) as web_url:
+            landing = urlopen(f"{web_url}/", timeout=5)
+            assert landing.url.endswith("/setup"), (
+                f"expected to be sent to setup, got {landing.url}"
+            )
+            body = landing.read().decode()
+
+            kiosk = urlopen(f"{web_url}/kiosk", timeout=5)
+            assert kiosk.url.endswith("/setup"), "the kiosk must not skip it either"
+
+    assert "Wi-Fi country" in body or "Connect to Wi-Fi" in body
+
+
+def test_a_finished_device_is_not_sent_back_into_setup(tmp_path: Path) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "aa-bb-cc"\ncards: {}\n', encoding="utf-8"
+    )
+    with run_control_server(FakeControlState(unlocked=True)) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url, setup_complete=True
+        ) as web_url:
+            landing = urlopen(f"{web_url}/", timeout=5)
+    assert not landing.url.endswith("/setup"), (
+        "a device that finished setup must not be dragged back through it"
+    )
 

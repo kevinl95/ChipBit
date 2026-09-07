@@ -1428,6 +1428,10 @@ class WebApp:
     state_path: Path | None = None
     screen_time_limit_path: Path | None = None
     screen_time_usage_path: Path | None = None
+    # First-run markers.  Injectable like the rest of the state, so a test
+    # never depends on what happens to be in /var/lib/chipbit on the host.
+    wifi_country_path: Path | None = None
+    wifi_setup_path: Path | None = None
     _mutation_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -1720,6 +1724,27 @@ class WebApp:
             return "Reloaded daemon config"
         return "No config changes detected"
 
+    @property
+    def wifi_country_file(self) -> Path:
+        return self.wifi_country_path or _WIFI_COUNTRY_FILE
+
+    @property
+    def wifi_setup_file(self) -> Path:
+        return self.wifi_setup_path or _WIFI_SETUP_FILE
+
+    def mark_setup_complete(self) -> None:
+        """Record that first-run setup is finished.
+
+        Creates the directory: without it a missing /var/lib/chipbit turns
+        into a 500 on the last step of setup and the parent loops forever.
+        """
+        self.wifi_setup_file.parent.mkdir(parents=True, exist_ok=True)
+        self.wifi_setup_file.touch()
+
+    def setup_complete(self) -> bool:
+        """Has the parent been all the way through first-run setup?"""
+        return self.wifi_setup_file.exists()
+
     def is_first_run(self) -> bool:
         """No admin card yet -- a genuinely fresh device."""
         try:
@@ -2009,8 +2034,8 @@ class WebApp:
         country = country.strip().upper()
         if country not in _VALID_COUNTRY_CODES:
             raise ValueError(f"Unknown country code: {country!r}")
-        _WIFI_COUNTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _WIFI_COUNTRY_FILE.write_text(country + "\n")
+        self.wifi_country_file.parent.mkdir(parents=True, exist_ok=True)
+        self.wifi_country_file.write_text(country + "\n")
         result = self.runner(
             ["sudo", "/usr/share/chipbit/apply_wifi_country.sh"],
             check=False, capture_output=True, text=True,
@@ -3750,6 +3775,8 @@ def create_web_server(
     locale_dirs: tuple[Path, ...] | None = None,
     screen_time_limit_path: Path | None = None,
     screen_time_usage_path: Path | None = None,
+    wifi_country_path: Path | None = None,
+    wifi_setup_path: Path | None = None,
     games_root: Path = Path("/games"),
 ) -> ThreadingHTTPServer:
     """Create the plain-HTML parent console and kiosk shell server."""
@@ -3768,6 +3795,8 @@ def create_web_server(
         locale_dirs=locale_dirs,
         screen_time_limit_path=screen_time_limit_path,
         screen_time_usage_path=screen_time_usage_path,
+        wifi_country_path=wifi_country_path,
+        wifi_setup_path=wifi_setup_path,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -3806,14 +3835,24 @@ def create_web_server(
                             200, app.render_language_picker(next_path="/")
                         )
                         return
+                    # Setup is driven by state, not by one page's JavaScript.
+                    # The daemon enrolls the first card it ever sees, so a card
+                    # tapped on any earlier screen already claims the admin
+                    # slot; when that happened the first-run page never
+                    # rendered, its redirect never fired, and the parent was
+                    # dropped straight into the console having never been
+                    # offered Wi-Fi.
+                    if not app.is_first_run() and not app.setup_complete():
+                        self._redirect("/setup")
+                        return
                     self._send_html(200, app.render_index())
                     return
                 if path == "/setup":
-                    if app.needs_language_choice() and not _WIFI_SETUP_FILE.exists():
+                    if app.needs_language_choice() and not app.setup_complete():
                         self._send_html(
                             200, app.render_language_picker(next_path="/setup")
                         )
-                    elif not _WIFI_COUNTRY_FILE.exists():
+                    elif not app.wifi_country_file.exists():
                         self._send_html(200, app.render_country_picker())
                     else:
                         qs = parse_qs(urlparse(self.path).query)
@@ -3839,7 +3878,7 @@ def create_web_server(
                     self._send_html(200, app.render_work_export_status(job_id))
                     return
                 if path == "/setup/skip":
-                    _WIFI_SETUP_FILE.touch()
+                    app.mark_setup_complete()
                     self._redirect("/")
                     return
                 if path == "/kiosk":
@@ -3847,9 +3886,11 @@ def create_web_server(
                     if "unlock" not in cards.system_cards:
                         self._redirect("/admin")
                         return
-                    # Country chosen but WiFi setup not yet completed → guide
-                    # the user through setup before showing the kiosk.
-                    if _WIFI_COUNTRY_FILE.exists() and not _WIFI_SETUP_FILE.exists():
+                    # Setup not finished → finish it first. Keyed only on
+                    # the completion marker: requiring a country file too meant
+                    # a device whose admin card was claimed before the country
+                    # step sailed past setup entirely.
+                    if not app.setup_complete():
                         self._redirect("/setup")
                         return
                     self._send_html(200, app.render_kiosk())
@@ -4026,7 +4067,7 @@ def create_web_server(
             if path == "/setup/wifi":
                 try:
                     app.configure_wifi(form.get("ssid", ""), form.get("password"))
-                    _WIFI_SETUP_FILE.touch()
+                    app.mark_setup_complete()
                     # Kick NTP sync — Pi has no RTC so the clock is wrong at boot.
                     # Fire-and-forget; sync completes in the background within seconds.
                     try:

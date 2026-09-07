@@ -218,6 +218,18 @@ def web_main(
         help="File holding how much screen time has been used today.",
     )
     parser.add_argument(
+        "--wifi-country-file",
+        type=Path,
+        default=None,
+        help="File holding the chosen Wi-Fi country.",
+    )
+    parser.add_argument(
+        "--wifi-setup-file",
+        type=Path,
+        default=None,
+        help="Marker file recording that first-run setup finished.",
+    )
+    parser.add_argument(
         "--locales-dir",
         type=Path,
         action="append",
@@ -269,6 +281,8 @@ def web_main(
         locale_dirs=locale_dirs,
         screen_time_limit_path=args.screen_time_limit_file,
         screen_time_usage_path=args.screen_time_usage_file,
+        wifi_country_path=args.wifi_country_file,
+        wifi_setup_path=args.wifi_setup_file,
     )
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
