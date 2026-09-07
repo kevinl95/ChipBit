@@ -937,6 +937,9 @@ def test_export_copies_everything_not_just_the_pictures(tmp_path: Path) -> None:
     drive.mkdir(parents=True)
     app._detect_drives = lambda: [drive]
     app._device_for_mount = lambda mount: "/dev/sda1"
+    # Never shell out to the host's sync/udisksctl from a test: a bare `sync`
+    # on a busy CI runner flushes every filesystem and can take many seconds.
+    app.runner = lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", "")
 
     job = app.start_work_export(str(drive))
     _await_export(app, job)
@@ -970,9 +973,11 @@ def test_export_syncs_and_unmounts_before_saying_it_is_safe(tmp_path: Path) -> N
     job = app.start_work_export(str(drive))
     state = _await_export(app, job)
 
-    assert ["sync"] in ran
-    assert ["udisksctl", "unmount", "-b", "/dev/sda1"] in ran
-    assert ran.index(["sync"]) < ran.index(["udisksctl", "unmount", "-b", "/dev/sda1"])
+    sync_cmd = ["sync", "-f", str(drive)]
+    unmount_cmd = ["udisksctl", "unmount", "-b", "/dev/sda1"]
+    assert sync_cmd in ran
+    assert unmount_cmd in ran
+    assert ran.index(sync_cmd) < ran.index(unmount_cmd), "flush before unmounting"
     assert state["unmounted"] is True
 
 
@@ -1147,4 +1152,50 @@ def test_catalog_and_image_overlay_agree() -> None:
         "catalog/catalog.yaml and the image overlay copy have drifted; "
         "the device would ship a different catalog than the repo shows"
     )
+
+
+
+
+def test_export_finishes_even_when_a_helper_blows_up(tmp_path: Path) -> None:
+    """A job that dies without marking itself done leaves the parent watching a
+    spinner forever, which looks exactly like a crashed device."""
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    drive = tmp_path / "media" / "STICK"
+    drive.mkdir(parents=True)
+    app._detect_drives = lambda: [drive]
+
+    def explode(mount):
+        raise RuntimeError("no /proc/mounts here")
+
+    app._device_for_mount = explode
+    app.runner = lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", "")
+
+    job = app.start_work_export(str(drive))
+    state = _await_export(app, job)
+    assert state["done"] is True
+    assert state["error"] is not None
+
+
+def test_sync_is_targeted_at_the_drive_not_the_whole_machine(
+    tmp_path: Path,
+) -> None:
+    """A bare `sync` flushes every filesystem; on a slow SD card that is the
+    difference between a pause and an apparent hang."""
+    app, _home = _work_app(tmp_path, write_work_catalog(tmp_path))
+    drive = tmp_path / "media" / "STICK"
+    drive.mkdir(parents=True)
+    app._detect_drives = lambda: [drive]
+    app._device_for_mount = lambda mount: "/dev/sda1"
+
+    ran: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        ran.append(list(argv))
+        assert kwargs.get("timeout"), f"{argv[0]} must be bounded"
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    app.runner = runner
+    _await_export(app, app.start_work_export(str(drive)))
+    assert ["sync", "-f", str(drive)] in ran
+    assert ["sync"] not in ran
 

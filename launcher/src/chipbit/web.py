@@ -2662,6 +2662,28 @@ class WebApp:
     ) -> None:
         error: str | None = None
         copied = 0
+        unmounted = False
+        try:
+            copied, error = self._copy_work_to(drive, sources)
+            if error is None:
+                unmounted = self._release_drive(drive)
+        except Exception as exc:  # noqa: BLE001 - the job must always finish
+            # A background job that can die without marking itself done leaves
+            # the parent watching a spinner forever, which is indistinguishable
+            # from the device having crashed.
+            log.exception("work export failed unexpectedly")
+            error = str(exc)
+        finally:
+            with self._export_jobs_lock:
+                self._export_jobs[job_id] = {
+                    "done": True, "error": error,
+                    "unmounted": unmounted, "files": copied,
+                }
+
+    def _copy_work_to(
+        self, drive: Path, sources: list[tuple[str, Path]]
+    ) -> tuple[int, str | None]:
+        copied = 0
         # Date-stamped so backing up twice never overwrites the first copy.
         root = drive / "ChipBit" / time.strftime("%Y-%m-%d")
         try:
@@ -2677,32 +2699,37 @@ class WebApp:
                     shutil.copy(entry, dest)
                     copied += 1
         except (OSError, shutil.Error) as exc:
-            error = str(exc)
+            return copied, str(exc)
+        return copied, None
 
-        unmounted = False
-        if error is None:
-            # Parents pull the stick the instant the bar stops, so flush and
-            # unmount before saying a word about it being safe.
-            try:
-                self.runner(["sync"], check=False, capture_output=True, text=True)
-            except OSError:
-                pass
-            device = self._device_for_mount(drive)
-            if device:
-                try:
-                    result = self.runner(
-                        ["udisksctl", "unmount", "-b", device],
-                        check=False, capture_output=True, text=True,
-                    )
-                    unmounted = result.returncode == 0
-                except OSError:
-                    unmounted = False
+    def _release_drive(self, drive: Path) -> bool:
+        """Flush and unmount, so we can honestly say the drive is safe to pull.
 
-        with self._export_jobs_lock:
-            self._export_jobs[job_id] = {
-                "done": True, "error": error,
-                "unmounted": unmounted, "files": copied,
-            }
+        `sync` with no argument flushes every filesystem on the machine, which
+        on a Pi with a slow SD card can take far longer than flushing the stick
+        the parent is waiting for.  `sync -f` targets just this one.
+        """
+        if self._run_tool(["sync", "-f", str(drive)]) is None:
+            return False
+        device = self._device_for_mount(drive)
+        if not device:
+            return False
+        result = self._run_tool(["udisksctl", "unmount", "-b", device])
+        return result is not None and result.returncode == 0
+
+    def _run_tool(self, argv: list[str], timeout: float = 60.0):
+        """Run a short helper command, or return None if it could not run.
+
+        Bounded on purpose: a wedged sync or unmount must not strand the
+        export, because the parent has no way to tell a slow flush from a hang.
+        """
+        try:
+            return self.runner(
+                argv, check=False, capture_output=True, text=True, timeout=timeout
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("%s failed: %s", argv[0], exc)
+            return None
 
     def _home(self) -> Path:
         """Home directory the titles save into.
