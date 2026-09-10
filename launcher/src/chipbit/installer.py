@@ -63,7 +63,7 @@ _APT_FAIL_FAST = (
 # everything is already in the cache and the step takes seconds.
 _APT_UPDATE_SECS = 120
 _APT_DOWNLOAD_SECS = 900
-_APT_INSTALL_SECS = 600
+_APT_INSTALL_SECS = 1200
 _APT_REPAIR_SECS = 300
 _APT_KILL_AFTER_SECS = 10
 
@@ -247,6 +247,16 @@ def ensure_install_spec_installed(
                         f"{', '.join(packages)}: {detail or 'unknown error'}"
                     )
 
+        if manager.download_argv is not None:
+            # Marks the hand-off from downloading to unpacking. Without it the
+            # screen still said "Downloading" through the whole dpkg phase,
+            # which for a big KDE title is the slowest part by far.
+            yield InstallProgress(
+                step="installing",
+                message=f"Setting up {', '.join(packages)}",
+                manager=manager_name,
+                packages=packages,
+            )
         install_argv = _rewrite_python_executable(
             manager.install_argv(packages, flatpak_remote),
             python_executable=executable,
@@ -468,7 +478,10 @@ def has_required_data(
             return False
         try:
             result = _run_command(
-                [scummvm_executable, "--detect", f"--path={content_path}"],
+                [
+                scummvm_executable, "--detect", "--recursive",
+                f"--path={content_path}",
+            ],
                 runner=runner,
                 timeout=30.0,
             )
@@ -718,10 +731,48 @@ def _rewrite_python_executable(
     return [python_executable, *argv[1:]]
 
 
-def _scummvm_detect_output_has_game_id(output: str, game_id: str) -> bool:
-    expected = game_id.lower()
+# Column headings ScummVM has used for the id column, plus the neighbouring
+# headings, so a header row is never mistaken for a game.
+_SCUMMVM_DETECT_HEADINGS = frozenset({
+    "id", "gameid", "game", "description", "full", "path", "language",
+    "platform", "engine", "extra",
+})
+
+
+def normalize_scummvm_game_id(game_id: str) -> str:
+    """Strip an ``engine:`` prefix. ScummVM accepts either form as a target."""
+    bare = game_id.strip().rstrip(":")
+    if ":" in bare:
+        bare = bare.split(":", 1)[1]
+    return bare
+
+
+def parse_scummvm_detect(output: str) -> list[str]:
+    """Game IDs from ``scummvm --detect``, tolerant of its table layout.
+
+    ScummVM has printed this table more than one way: indented or flush left,
+    and with or without an ``engine:`` prefix on the id.  There used to be two
+    parsers here that each handled only one shape, so the Add-a-card form
+    silently never prefilled the id while the readiness check thought the same
+    output was fine.  One parser, used by both.
+    """
+    found: list[str] = []
     for line in output.splitlines():
         fields = line.split()
-        if fields and fields[0].rstrip(":").lower() == expected:
-            return True
-    return False
+        # A real row is "<id> <description...>"; headers and rules are not.
+        if len(fields) < 2:
+            continue
+        candidate = normalize_scummvm_game_id(fields[0])
+        if not candidate or not candidate[0].isalpha():
+            continue
+        if candidate.lower() in _SCUMMVM_DETECT_HEADINGS:
+            continue
+        found.append(candidate)
+    return found
+
+
+def _scummvm_detect_output_has_game_id(output: str, game_id: str) -> bool:
+    expected = normalize_scummvm_game_id(game_id).lower()
+    return any(
+        found.lower() == expected for found in parse_scummvm_detect(output)
+    )

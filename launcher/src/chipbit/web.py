@@ -33,6 +33,7 @@ from .installer import (
     NetworkUnavailableError,
     enroll_card,
     has_required_data,
+    parse_scummvm_detect,
 )
 from .models import (
     CardsConfig,
@@ -43,6 +44,7 @@ from .models import (
     load_cards,
     load_catalog_merged,
     normalize_uid,
+    resolve_title_content_path,
     save_cards,
     save_user_title,
 )
@@ -2229,7 +2231,13 @@ class WebApp:
                 id=title_id, label=label, type="scummvm",
                 bundled=False, game_id=game_id,
                 data_dir=data_dir,
-                install={"apt": ("scummvm",)},
+                # No install spec: ScummVM itself ships in the image as a base
+                # dependency.  Declaring one made the tile claim the *game*
+                # would download on first use, which it never does -- the
+                # parent supplies it.  Deliberately not data="required"
+                # either: that gates *enrollment* on `scummvm --detect`
+                # succeeding, so an undetected game would be impossible to
+                # add a card for at all.
             )
         else:  # ruffle
             swf = form.get("swf", "").strip()
@@ -2444,16 +2452,36 @@ class WebApp:
             self._copy_jobs[job_id] = {
                 "done": False, "error": None, "prefill": {}, "back": back,
             }
-        t = threading.Thread(
+        done = threading.Event()
+        threading.Thread(
+            target=self._hold_unlock_while, args=(done,), daemon=True
+        ).start()
+        threading.Thread(
             target=self._run_copy_job,
-            args=(job_id, source, dest, games_root),
+            args=(job_id, source, dest, games_root, done),
             daemon=True,
-        )
-        t.start()
+        ).start()
         return job_id
 
+    def _hold_unlock_while(self, done: threading.Event, interval: float = 60.0) -> None:
+        """Keep the parent session unlocked while a long job runs.
+
+        Copying a CD can take longer than the unlock window, and the session
+        expiring mid-copy dumped the parent back to "tap your admin card" and
+        lost the page that was tracking the copy.  Refreshed from the server
+        while the job is alive, so no request is needed to hold it open and
+        nothing on the network can extend the window by asking.
+        """
+        while not done.wait(interval):
+            try:
+                self.control.unlock()
+            except ControlApiError as exc:
+                log.warning("could not hold the admin session open: %s", exc)
+                return
+
     def _run_copy_job(
-        self, job_id: str, source: str, dest: str, games_root: Path
+        self, job_id: str, source: str, dest: str, games_root: Path,
+        done: threading.Event | None = None,
     ) -> None:
         try:
             self.copy_game_files(source, dest, games_root)
@@ -2463,6 +2491,9 @@ class WebApp:
         except Exception as exc:
             with self._copy_jobs_lock:
                 self._copy_jobs[job_id].update({"done": True, "error": str(exc)})
+        finally:
+            if done is not None:
+                done.set()
 
     def render_copy_status(self, job_id: str) -> str:
         with self._copy_jobs_lock:
@@ -2674,16 +2705,20 @@ class WebApp:
             self._export_jobs[job_id] = {
                 "done": False, "error": None, "unmounted": False, "files": 0,
             }
-        thread = threading.Thread(
+        done = threading.Event()
+        threading.Thread(
+            target=self._hold_unlock_while, args=(done,), daemon=True
+        ).start()
+        threading.Thread(
             target=self._run_work_export,
-            args=(job_id, target, sources),
+            args=(job_id, target, sources, done),
             daemon=True,
-        )
-        thread.start()
+        ).start()
         return job_id
 
     def _run_work_export(
-        self, job_id: str, drive: Path, sources: list[tuple[str, Path]]
+        self, job_id: str, drive: Path, sources: list[tuple[str, Path]],
+        done: threading.Event | None = None,
     ) -> None:
         error: str | None = None
         copied = 0
@@ -2704,6 +2739,8 @@ class WebApp:
                     "done": True, "error": error,
                     "unmounted": unmounted, "files": copied,
                 }
+            if done is not None:
+                done.set()
 
     def _copy_work_to(
         self, drive: Path, sources: list[tuple[str, Path]]
@@ -3008,20 +3045,23 @@ class WebApp:
         return {"type": "exec", "label": label}
 
     def _detect_scummvm_game_id(self, content_path: Path) -> str | None:
-        """Return the first game ID scummvm --detect finds in content_path, or None."""
-        import re
+        """First game ID `scummvm --detect` finds under content_path, or None.
+
+        --recursive because a copied CD usually puts the game one folder down,
+        and without it detection sees an empty directory and prefills nothing.
+        """
         try:
             result = self.runner(
-                [self.scummvm_executable, "--detect", f"--path={content_path}"],
-                check=False, capture_output=True, text=True, timeout=30.0,
+                [
+                    self.scummvm_executable, "--detect", "--recursive",
+                    f"--path={content_path}",
+                ],
+                check=False, capture_output=True, text=True, timeout=60.0,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
-        for line in result.stdout.splitlines():
-            m = re.match(r"^\s+([a-z][a-z0-9.:_-]+)\s+\S", line)
-            if m:
-                return m.group(1)
-        return None
+        found = parse_scummvm_detect(result.stdout)
+        return found[0] if found else None
 
     def _require_unlocked(self, cards: CardsConfig) -> None:
         if "unlock" not in cards.system_cards:
@@ -3536,9 +3576,11 @@ class WebApp:
         the parent has to supply is an implementation detail everywhere except
         here, where it decides whether tapping a card will work.
         """
-        if title.data == "required":
-            ready = self._required_data_ready(title, catalog)
-            return "ready" if ready else "needs_files"
+        # Engine titles always need parent-supplied content, whether or not
+        # the entry bothered to say data: required. The flag gates enrollment;
+        # this only decides what the tile says.
+        if title.data == "required" or title.type in {"scummvm", "ruffle"}:
+            return "ready" if self._content_present(title, catalog) else "needs_files"
         if title.install:
             return "downloads"
         return "ready"
@@ -3632,6 +3674,21 @@ class WebApp:
         state["ink"] = ink
         state["on_ink"] = on_ink
         return state
+
+    def _content_present(self, title: CatalogTitle, catalog: Catalog) -> bool:
+        """Is the parent-supplied content actually there?
+
+        has_required_data() answers True for anything not flagged
+        data: required, so asking it about a user-created card always said
+        yes.  A card the parent made themselves still needs its files; the
+        flag only decides whether enrollment is blocked, not whether the
+        content exists.  Falls back to a plain path check, which also avoids
+        running `scummvm --detect` on every console render.
+        """
+        if title.data == "required":
+            return self._required_data_ready(title, catalog)
+        content = resolve_title_content_path(title, catalog.settings.games_root)
+        return content is not None and content.exists()
 
     def _required_data_ready(self, title: CatalogTitle, catalog: Catalog) -> bool:
         cache_key = (

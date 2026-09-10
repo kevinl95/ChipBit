@@ -18,7 +18,7 @@ import pytest
 import chipbit.web as web_module
 from chipbit import strings
 from chipbit.installer import InstallProgress
-from chipbit.models import load_cards, load_catalog_merged
+from chipbit.models import CatalogTitle, load_cards, load_catalog_merged
 from chipbit.web import create_web_server
 
 
@@ -223,7 +223,7 @@ titles:
             http_get(f"{web_url}/")
 
     assert runner.calls == [
-        ["scummvm", "--detect", f"--path={data_dir}"],
+        ["scummvm", "--detect", "--recursive", f"--path={data_dir}"],
     ]
 
 
@@ -635,7 +635,12 @@ def test_create_custom_scummvm_title(tmp_path: Path) -> None:
     entry = raw["titles"][0]
     assert entry["type"] == "scummvm"
     assert entry["game_id"] == "monkey"
-    assert "data" not in entry  # user-created ScummVM titles don't need data="required"
+    # No data="required": that gates enrollment on `scummvm --detect`, and a
+    # game it fails to detect must still be addable.
+    assert "data" not in entry
+    # No install spec either. ScummVM ships in the image, and declaring one
+    # made the tile say the *game* downloads on first use.
+    assert "install" not in entry, "the tile would claim the game downloads"
 
 
 def test_create_custom_title_missing_label_returns_400(tmp_path: Path) -> None:
@@ -1259,4 +1264,123 @@ def test_a_finished_device_is_not_sent_back_into_setup(tmp_path: Path) -> None:
     assert not landing.url.endswith("/setup"), (
         "a device that finished setup must not be dragged back through it"
     )
+
+
+# --- regressions from hardware testing --------------------------------------
+
+
+def test_scummvm_detect_is_parsed_in_every_layout_scummvm_uses() -> None:
+    """Regression: there were two parsers for `scummvm --detect` and they
+    disagreed. The web one required a leading indent, so against real output
+    it matched nothing and the game ID was never prefilled."""
+    from chipbit.installer import parse_scummvm_detect
+
+    modern = (
+        "GameID                Description                       Full Path\n"
+        "--------------------- --------------------------------- ---------\n"
+        "scumm:spyfox          SPY Fox in Dry Cereal             /games/x\n"
+    )
+    assert parse_scummvm_detect(modern) == ["spyfox"]
+
+    indented = "   puttmoon   Putt-Putt Goes to the Moon\n"
+    assert parse_scummvm_detect(indented) == ["puttmoon"]
+
+    several = (
+        "scumm:freddi   Freddi Fish and the Case of the Missing Kelp Seeds\n"
+        "scumm:puttputt Putt-Putt Joins the Parade\n"
+    )
+    assert parse_scummvm_detect(several) == ["freddi", "puttputt"]
+
+    # headers and rules are not games
+    assert parse_scummvm_detect("ID Description\n---- ----\n") == []
+
+
+def test_detect_recurses_so_a_copied_cd_is_found(tmp_path: Path) -> None:
+    """A copied CD usually puts the game a folder down; without --recursive
+    detection sees an empty directory and prefills nothing."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, "scumm:spyfox   SPY Fox in Dry Cereal\n", ""
+        )
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path,
+        control=Control(), runner=runner,
+    )
+    assert app._detect_scummvm_game_id(tmp_path) == "spyfox"
+    assert "--recursive" in seen[0]
+
+
+def test_a_custom_scummvm_card_does_not_claim_the_game_downloads(
+    tmp_path: Path,
+) -> None:
+    """Regression: the tile read "Downloads on first use" for a game the
+    parent supplies themselves, because the entry declared an apt install of
+    the ScummVM engine (which already ships in the image)."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path, control=Control(),
+        runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", ""),
+    )
+    title = CatalogTitle(
+        id="user-spyfox", label="SPY Fox", type="scummvm",
+        bundled=False, game_id="spyfox", data_dir="scummvm/spyfox",
+    )
+    catalog = app._load_catalog()
+    state = app._title_state(title, catalog)
+    assert state != "downloads", "a supplied game never downloads on first use"
+    assert state == "needs_files"
+
+
+def test_a_long_copy_holds_the_admin_session_open(tmp_path: Path) -> None:
+    """Copying a CD can outlast the unlock window; the session expiring
+    mid-copy dumped the parent back to the tap-your-card screen."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\ncards: {}\n')
+
+    unlocks: list[int] = []
+
+    class Control:
+        def status(self):
+            return {"unlocked": True}
+
+        def unlock(self):
+            unlocks.append(1)
+            return {}
+
+    app = web_module.WebApp(
+        catalog_path=catalog_path, cards_path=cards_path, control=Control()
+    )
+    done = threading.Event()
+    holder = threading.Thread(
+        target=app._hold_unlock_while, args=(done, 0.05), daemon=True
+    )
+    holder.start()
+    time.sleep(0.3)
+    done.set()
+    holder.join(timeout=2)
+
+    assert unlocks, "the session must be refreshed while the job runs"
+    before = len(unlocks)
+    time.sleep(0.2)
+    assert len(unlocks) == before, "and must stop once the job finishes"
 

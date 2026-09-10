@@ -130,7 +130,7 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
             ),
             ExpectedCall(
                 [
-                    "timeout", "--signal=TERM", "--kill-after=10", "600",
+                    "timeout", "--signal=TERM", "--kill-after=10", "1200",
                     "sudo", "apt-get", "install", "-y",
                     "--no-install-recommends",
                     "-o", "DPkg::Lock::Timeout=60",
@@ -162,6 +162,7 @@ def test_ensure_install_spec_installs_missing_packages() -> None:
         "installing",
         "installing",  # update package lists
         "installing",  # download into the apt cache
+        "installing",  # unpack and configure, the slow phase for a big title
         "verifying",
         "installed",
     ]
@@ -312,7 +313,7 @@ def test_has_required_data_uses_scummvm_detect_with_data_dir(tmp_path: Path) -> 
     runner = FakeRunner(
         [
             ExpectedCall(
-                ["scummvm", "--detect", f"--path={data_dir}"],
+                ["scummvm", "--detect", "--recursive", f"--path={data_dir}"],
                 stdout="puttmoon: Putt-Putt Goes to the Moon\n",
             )
         ]
@@ -365,7 +366,7 @@ def test_has_required_data_requires_scummvm_game_id_match(tmp_path: Path) -> Non
     runner = FakeRunner(
         [
             ExpectedCall(
-                ["scummvm", "--detect", f"--path={data_dir}"],
+                ["scummvm", "--detect", "--recursive", f"--path={data_dir}"],
                 stdout="monkey: The Secret of Monkey Island\n",
             )
         ]
@@ -517,8 +518,13 @@ def test_download_is_the_step_under_the_long_timeout() -> None:
     install = apt.install_argv(("demo-app",), None)
     assert "--download-only" in download
     assert "--download-only" not in install
-    assert int(download[3]) > int(install[3]), (
-        "the network-bound step should get the longer budget"
+    # Both are bounded, so neither can hang forever. The unpack gets the more
+    # generous budget on purpose: killing a download only discards a partial
+    # cache, but killing dpkg part way through leaves the system demanding
+    # `dpkg --configure -a`, which a parent has no way to run.
+    assert int(download[3]) > 0 and int(install[3]) > 0
+    assert int(install[3]) >= int(download[3]), (
+        "unpacking must not be cut shorter than downloading"
     )
 
 
