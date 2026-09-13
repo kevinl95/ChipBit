@@ -8,6 +8,14 @@ Chipbit is Raspberry Pi (400 or newer) that boots straight into a kiosk and laun
 
 It runs ScummVM, Ruffle (Flash emulator), native Linux apps, and a locked-down browser, so most of your favorite edutainment catalog works if you supply the data.
 
+![The ChipBit idle screen: a card held against a reader, under the words "Tap a card"](docs/screenshots/kiosk-idle.png)
+
+*What a child sees when nothing is running.*
+
+![A title loading: the whole screen has turned teal and reads "SPY Fox in Dry Cereal - Getting it ready..."](docs/screenshots/kiosk-loading.png)
+
+*A second after they tap. Every card has its own color, and it is the same color every time.*
+
 ## Hardware
 
 | Part | Notes |
@@ -28,6 +36,8 @@ The reader has to type the UID and then press Enter. ChipBit keeps the character
 5. Choose your Wi-Fi country. This sets which radio channels are legal where you are, and the Pi reboots once to apply it.
 6. Join Wi-Fi, or skip it. You only need a network for titles that download on first use.
 7. Hold a card to the reader. That card becomes the admin card, which is the key to the parent screens. Keep it somewhere the kids cannot reach.
+
+![The first-run screen, reading "Make this card the admin card" with a card-and-reader drawing above it](docs/screenshots/first-boot-admin-card.png)
 
 
 ## Adding game data
@@ -53,6 +63,8 @@ Ruffle plays a single `.swf` per card. Anything that loads assets over the netwo
 3. Hold a blank card to the reader within 30 seconds.
 4. If the title installs on first use, it downloads and installs now. The screen shows what it is doing and how long it has been going.
 
+![The parent console with a bar across the bottom reading "Enrolling...", "Tap your card to the reader now", and a running clock](docs/screenshots/enroll-waiting.png)
+
 Only one enrollment can run at a time. Starting a second while one is still installing is refused with a message rather than queued, because the reader has one slot and both enrollments would otherwise capture the same card.
 
 Tapping an already-bound card while enrolling reassigns it. You can also reassign or disable a card from the table further down the console.
@@ -69,6 +81,8 @@ ChipBit/2026-08-30/tuxpaint/saved/2026-08-14-153022.png
 ```
 
 It copies everything in those folders, not just the pictures it can preview. It runs `sync` and unmounts the drive before telling you it is safe to pull out, because that is exactly when people pull it out.
+
+![The "Your child's work" page showing six Tux Paint drawings as thumbnails, each labelled with its filename](docs/screenshots/childs-work.png)
 
 Which folders get backed up comes from `user_dirs` in `catalog.yaml`. A title that pins its save location has to declare that same location, or its work is invisible to the backup. Tux Paint saves to `/var/lib/chipbit/tuxpaint` through `--savedir`, and LibreOffice saves to `~/Documents` through an XDG pin in the image. Both are declared, and there are tests that fail if they ever drift apart.
 
@@ -100,6 +114,8 @@ The full field contract is commented at the top of `catalog.yaml`, and that comm
 Every string in the UI is in `launcher/src/chipbit/strings.py`, and a translation is a file of the same keys in `locales/`. Anything you leave out falls back to English, so a partial file is a useful contribution.
 
 The twelve `kiosk.*` keys are everything a child ever sees. Translate only those and a child who reads no English gets a machine that speaks to them, even with the parent console still in English.
+
+![The same idle screen in German: "Karte auflegen - Halte eine Karte an das Lesegerat, um zu spielen."](docs/screenshots/kiosk-german.png)
 
 To see your work without building an image:
 

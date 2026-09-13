@@ -1792,7 +1792,14 @@ class WebApp:
             result = self.runner(
                 ["sudo", "/usr/share/chipbit/apply_locale.sh", posix_locale],
                 check=False, capture_output=True, text=True,
+                # Bounded: on the Pi this is NOPASSWD, but anywhere sudo would
+                # prompt it blocks forever and the parent's language change
+                # never returns.
+                timeout=180.0,
             )
+        except subprocess.TimeoutExpired:
+            log.warning("locale generation for %s timed out", posix_locale)
+            return
         except OSError as exc:
             log.warning("could not generate locale %s: %s", posix_locale, exc)
             return
