@@ -407,6 +407,16 @@ class LauncherService:
         usage = screentime.read_usage(self._screen_time_usage_path)
         return screentime.snapshot(limit, usage)
 
+    def clear_screen_time(self) -> None:
+        """Start today's allowance over.
+
+        The accrual mark moves to now as well, so that time banked against the
+        old total does not land on the new one the next time a tick runs.
+        """
+        with self._lock:
+            self._screen_time_mark = self._monotonic() if self.is_running() else None
+            screentime.reset_usage(self._screen_time_usage_path)
+
     def _accrue_screen_time(self) -> None:
         """Bank the time since the last accrual, if a title is running."""
         with self._lock:
@@ -577,6 +587,57 @@ def build_launch_argv(
 
 
 DEFAULT_SCREEN_TIME_POLL_SECS = 20.0
+
+# How long to give the network to correct the clock before concluding it never
+# will.  Long enough to cover WiFi association plus an NTP round trip on a cold
+# boot; short enough that a child is not staring at a lockout screen for the
+# whole of it.
+DEFAULT_CLOCK_WAIT_SECS = 120.0
+
+
+def await_clock_sync(
+    service: LauncherService,
+    stop: threading.Event,
+    wait_secs: float = DEFAULT_CLOCK_WAIT_SECS,
+    poll_secs: float = 2.0,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Drop a stale allowance when the clock turns out to be unknowable.
+
+    A Pi has no battery-backed clock, so one switched off overnight boots
+    believing it is still last night: the same calendar day, with yesterday's
+    usage still counting against it.  The child is locked out of a day that
+    already ended.
+
+    If the network corrects the clock we do nothing at all -- ``read_usage``
+    compares against the real day and rolls over by itself, including for a
+    reboot part way through today, which must *not* hand back spent time.
+    Only when sync never arrives is the day genuinely unknowable, and a daily
+    allowance cannot be enforced honestly against a date that might be wrong.
+    Then it starts fresh for this boot.
+
+    Returns True if the allowance was cleared.
+    """
+    started = monotonic()
+    while True:
+        if screentime.clock_is_synced():
+            return False
+        if monotonic() - started >= wait_secs:
+            break
+        if stop.wait(poll_secs):
+            return False
+    log.warning(
+        "clock still unsynced after %.0fs; clearing screen time for this boot",
+        wait_secs,
+    )
+    try:
+        service.clear_screen_time()
+    except OSError as exc:
+        # Same bargain as accrual: losing the count is bad, but refusing to
+        # boot a usable device over it would be worse.
+        log.warning("could not clear screen time: %s", exc)
+        return False
+    return True
 
 
 def poll_screen_time(

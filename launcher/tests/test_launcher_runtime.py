@@ -14,6 +14,7 @@ from chipbit.launcher import (
     FileBackedConfig,
     LauncherService,
     LaunchSettings,
+    await_clock_sync,
     build_launch_argv,
 )
 from chipbit.models import CatalogTitle, load_cards
@@ -550,3 +551,107 @@ def test_stopping_banks_the_final_stretch(tmp_path: Path) -> None:
     service.stop_current()
     assert service.status()["screen_time"]["used_seconds"] == 45
 
+
+
+class _ClearSpy:
+    """Stands in for the service: all await_clock_sync needs is the one call."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.calls = 0
+        self.fail = fail
+
+    def clear_screen_time(self) -> None:
+        self.calls += 1
+        if self.fail:
+            raise OSError("read-only filesystem")
+
+
+def _ticking(step: float = 10.0):
+    """A monotonic() that advances a fixed step each time it is read."""
+    state = {"now": 0.0}
+
+    def now() -> float:
+        value = state["now"]
+        state["now"] += step
+        return value
+
+    return now
+
+
+def _sync_after(calls: int, monkeypatch) -> None:
+    state = {"n": 0}
+
+    def synced(path=None) -> bool:
+        state["n"] += 1
+        return state["n"] > calls
+
+    monkeypatch.setattr("chipbit.launcher.screentime.clock_is_synced", synced)
+
+
+def test_a_synced_clock_leaves_the_allowance_alone(monkeypatch) -> None:
+    """The normal case: nothing to fix, so nothing is touched."""
+    _sync_after(0, monkeypatch)
+    spy = _ClearSpy()
+    # Bounded clock even though this should return on the first check, so a
+    # regression here fails the test rather than spinning for two minutes.
+    result = await_clock_sync(
+        spy, threading.Event(), wait_secs=60, poll_secs=0, monotonic=_ticking()
+    )
+    assert result is False
+    assert spy.calls == 0
+
+
+def test_sync_arriving_during_the_wait_does_not_hand_back_spent_time(
+    monkeypatch,
+) -> None:
+    """A reboot part way through today must not reset the allowance.
+
+    Once the network corrects the clock, read_usage() compares against the
+    real day on its own -- and today is still today.
+    """
+    _sync_after(3, monkeypatch)
+    spy = _ClearSpy()
+    result = await_clock_sync(
+        spy, threading.Event(), wait_secs=600, poll_secs=0, monotonic=_ticking()
+    )
+    assert result is False
+    assert spy.calls == 0
+
+
+def test_a_clock_that_never_syncs_starts_the_allowance_fresh(monkeypatch) -> None:
+    """The overnight lockout: no network, so the calendar day is unknowable."""
+    monkeypatch.setattr(
+        "chipbit.launcher.screentime.clock_is_synced", lambda path=None: False
+    )
+    spy = _ClearSpy()
+    result = await_clock_sync(
+        spy, threading.Event(), wait_secs=60, poll_secs=0, monotonic=_ticking()
+    )
+    assert result is True
+    assert spy.calls == 1
+
+
+def test_shutdown_during_the_wait_clears_nothing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chipbit.launcher.screentime.clock_is_synced", lambda path=None: False
+    )
+    stop = threading.Event()
+    stop.set()
+    spy = _ClearSpy()
+    result = await_clock_sync(
+        spy, stop, wait_secs=600, poll_secs=0, monotonic=_ticking()
+    )
+    assert result is False
+    assert spy.calls == 0
+
+
+def test_an_unwritable_counter_does_not_take_the_daemon_down(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chipbit.launcher.screentime.clock_is_synced", lambda path=None: False
+    )
+    spy = _ClearSpy(fail=True)
+    result = await_clock_sync(
+        spy, threading.Event(), wait_secs=60, poll_secs=0, monotonic=_ticking()
+    )
+    assert result is False
+    assert spy.calls == 1

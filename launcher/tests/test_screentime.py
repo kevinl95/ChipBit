@@ -118,3 +118,10 @@ def test_snapshot_shape(paths) -> None:
         "exhausted": False,
         "day": "2026-08-30",
     }
+
+
+def test_clock_sync_is_read_from_the_timesyncd_marker(tmp_path: Path) -> None:
+    marker = tmp_path / "synchronized"
+    assert screentime.clock_is_synced(marker) is False
+    marker.touch()
+    assert screentime.clock_is_synced(marker) is True

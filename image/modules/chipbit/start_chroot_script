@@ -429,6 +429,22 @@ plugins=keyfile
 managed=true
 EOF
 
+# A ChipBit is mains-powered and sits in a family room for hours at a time, so
+# there is nothing to gain from letting the radio sleep.  On the Pi's brcmfmac
+# chip, WiFi power save trades a trickle of current for associations that drop
+# after a quiet spell and do not always come back.  Retries of 0 mean "keep
+# trying forever" rather than NM's default of giving up after four attempts,
+# because nobody is sitting at this device to notice it stopped.
+#
+# This is not only about the network: a Pi has no RTC, so a device that cannot
+# reach NTP also cannot tell what day it is -- which is how a dropped WiFi
+# connection turns into a child locked out by the screen-time limit.
+cat > /etc/NetworkManager/conf.d/20-chipbit-wifi.conf <<'EOF'
+[connection]
+wifi.powersave = 2
+connection.autoconnect-retries = 0
+EOF
+
 # NM persists radio state in this file.  Seeding it with WifiEnabled=true
 # prevents the radio starting soft-blocked on first boot (seen on Pi 400 when
 # no country code was set during initial image flash).

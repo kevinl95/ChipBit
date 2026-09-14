@@ -6,7 +6,8 @@ child's allowance while nobody is using it.
 
 The counter is written to disk as it accrues, so power-cycling the Pi is not a
 way around it. It resets on the local calendar day, which is the boundary a
-family already thinks in.
+family already thinks in -- but only once the clock is worth believing. See
+``clock_is_synced``.
 
 There is no limit by default. A device that has never had one set behaves
 exactly as it did before this existed.
@@ -29,6 +30,10 @@ USAGE_FILE = Path("/var/lib/chipbit/screen_time_usage")
 # stops short of it.
 MAX_LIMIT_MINUTES = 1439
 
+# systemd-timesyncd creates this once it has corrected the clock from the
+# network.  It is the same marker systemd-time-wait-sync.service waits on.
+CLOCK_SYNCED_MARKER = Path("/run/systemd/timesync/synchronized")
+
 
 @dataclass(frozen=True)
 class Usage:
@@ -41,6 +46,18 @@ class Usage:
 def today() -> str:
     """Local calendar day, the boundary the allowance resets on."""
     return date.today().isoformat()
+
+
+def clock_is_synced(path: Path | None = None) -> bool:
+    """Whether the clock has been corrected from the network since boot.
+
+    A Pi has no battery-backed clock.  At boot it restores roughly the time it
+    was last shut down at, so a device switched off overnight wakes up still
+    on yesterday's calendar day -- and yesterday's usage still applies, which
+    locks a child out of a day that has already ended.  Until this is true,
+    nothing ``today()`` says about the calendar can be trusted.
+    """
+    return (path or CLOCK_SYNCED_MARKER).exists()
 
 
 def read_limit(path: Path | None = None) -> int:

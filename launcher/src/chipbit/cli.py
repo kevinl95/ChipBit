@@ -21,6 +21,7 @@ from .launcher import (
     FileBackedConfig,
     LauncherService,
     LaunchSettings,
+    await_clock_sync,
     poll_config,
     poll_screen_time,
 )
@@ -148,6 +149,14 @@ def launcher_main(argv: Sequence[str] | None = None) -> int:
         daemon=True,
     )
     screen_time_thread.start()
+    # Runs once, in the background: a Pi with no RTC boots on yesterday's date
+    # and would otherwise keep a child locked out of a day that has ended.
+    clock_thread = threading.Thread(
+        target=await_clock_sync,
+        args=(service, stop),
+        daemon=True,
+    )
+    clock_thread.start()
     control_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     control_thread.start()
     log.info("control API on %s:%d", args.control_host, httpd.server_port)
