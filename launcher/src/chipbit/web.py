@@ -3622,7 +3622,15 @@ class WebApp:
             return self._kiosk_flood(state, operation.get("id") or operation["title"])
 
         current = status.get("current")
-        if status.get("running") is True and isinstance(current, str) and current:
+        # "launching" covers the handover, when the outgoing title has been
+        # reaped but the incoming one has not started yet.  Without it the
+        # kiosk drops to the idle screen for that gap.
+        launching = status.get("launching") is True
+        if (
+            (status.get("running") is True or launching)
+            and isinstance(current, str)
+            and current
+        ):
             current_art = status.get("current_art")
             current_id = status.get("current_id")
             kiosk = {

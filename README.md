@@ -4,7 +4,7 @@ ChipBit is the family computer reinvented. Imagine returning to their being a sh
 
 Best of all it is intuitive even for small children because all software is launched by simply tapping a card!
 
-Chipbit is Raspberry Pi (400 or newer) that boots straight into a kiosk and launches software when you tap an RFID card. Each card is bound to one title. An card stops whatever is running and returns to the configuration screen meant for parents. Everything is sandboxed- you can give users access to websites without worrying about them navigating places they shouldn't be, launch games with as much ease as a game console, and make works of art they can save safely to local storage.
+Chipbit is Raspberry Pi (400 or newer) that boots straight into a kiosk and launches software when you tap an RFID card. Each card is bound to one title. Everything is sandboxed- you can give users access to websites without worrying about them navigating places they shouldn't be, launch games with as much ease as a game console, and make works of art they can save safely to local storage.
 
 It runs ScummVM, Ruffle (Flash emulator), native Linux apps, and a locked-down browser, so most of your favorite edutainment catalog works if you supply the data.
 

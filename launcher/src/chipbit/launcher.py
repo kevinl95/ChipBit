@@ -168,6 +168,10 @@ class LauncherService:
         self._lock = threading.RLock()
         self._current_process: object | None = None
         self._current_title: CatalogTitle | None = None
+        # The title a tap has claimed the screen for but which has not started
+        # yet.  Set for the whole handover, so the kiosk never advertises the
+        # game that is on its way out.
+        self._pending_title: CatalogTitle | None = None
         self._capture_armed = False
         self._capture_uid: str | None = None
         self._capture_event = threading.Event()
@@ -320,16 +324,17 @@ class LauncherService:
                 self._current_process is not None
                 and self._current_process.poll() is None
             )
-            current = None if self._current_title is None else self._current_title.label
+            # During a swap the outgoing title is still alive while it winds
+            # down, so report the title the child actually tapped.  Otherwise
+            # the kiosk spends the whole stop grace period showing the game
+            # being tapped away from, name, art and colour.
+            shown = self._pending_title or self._current_title
             return {
                 "running": running,
-                "current": current,
-                "current_id": (
-                    None if self._current_title is None else self._current_title.id
-                ),
-                "current_art": (
-                    None if self._current_title is None else self._current_title.art
-                ),
+                "launching": self._pending_title is not None,
+                "current": None if shown is None else shown.label,
+                "current_id": None if shown is None else shown.id,
+                "current_art": None if shown is None else shown.art,
                 "unlocked": self._is_unlocked_locked(),
                 "cards": len(self.config.cards.title_cards),
                 "capture_mode": self._capture_armed,
@@ -355,46 +360,64 @@ class LauncherService:
             return
 
         policy = self.settings.while_running
+        swapping = False
         if self.is_running():
             if policy in {"home_only", "ignore"}:
                 log.info("ignoring %s (app running, policy=%s)", title.label, policy)
                 return
-            self.stop_current()
+            swapping = True
 
-        argv = build_launch_argv(
-            title,
-            self.config.catalog.settings.games_root,
-            self.settings,
-        )
-
-        home = Path(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
-        for rel in title.user_dirs:
-            try:
-                (home / rel).mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                log.warning("could not create user_dir %s: %s", rel, exc)
-
-        try:
-            process = self._popen_factory(
-                argv, start_new_session=True, env=self._child_env()
-            )
-        except (OSError, ValueError) as exc:
-            log.error("launch failed for %s: %s", title.label, exc)
-            return
-
+        # Claim the screen before the outgoing title is asked to leave.
+        # stop_current() waits out a grace period, and the old process is
+        # alive for all of it; spawning the new one takes a moment more, with
+        # nothing running at all.  Holding the incoming title across both
+        # keeps the kiosk on one card instead of flashing the last game and
+        # then the idle screen on the way to this one.
         with self._lock:
-            self._current_process = process
-            self._current_title = title
-            self._screen_time_mark = self._monotonic()
-        log.info("launched %s (pid %d)", title.label, process.pid)
+            self._pending_title = title
+        try:
+            if swapping:
+                self.stop_current()
 
-        if self._thread_factory is not None:
-            reaper = self._thread_factory(
-                target=self._reap_process,
-                args=(process,),
-                daemon=True,
+            argv = build_launch_argv(
+                title,
+                self.config.catalog.settings.games_root,
+                self.settings,
             )
-            reaper.start()
+
+            home = Path(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
+            for rel in title.user_dirs:
+                try:
+                    (home / rel).mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    log.warning("could not create user_dir %s: %s", rel, exc)
+
+            try:
+                process = self._popen_factory(
+                    argv, start_new_session=True, env=self._child_env()
+                )
+            except (OSError, ValueError) as exc:
+                log.error("launch failed for %s: %s", title.label, exc)
+                return
+
+            with self._lock:
+                self._current_process = process
+                self._current_title = title
+                self._screen_time_mark = self._monotonic()
+            log.info("launched %s (pid %d)", title.label, process.pid)
+
+            if self._thread_factory is not None:
+                reaper = self._thread_factory(
+                    target=self._reap_process,
+                    args=(process,),
+                    daemon=True,
+                )
+                reaper.start()
+        finally:
+            # Every exit path, so a failed launch cannot strand the kiosk on a
+            # title that never started.
+            with self._lock:
+                self._pending_title = None
 
     def _reap_process(self, process: object) -> None:
         process.wait()

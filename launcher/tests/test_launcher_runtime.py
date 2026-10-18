@@ -655,3 +655,67 @@ def test_an_unwritable_counter_does_not_take_the_daemon_down(monkeypatch) -> Non
     )
     assert result is False
     assert spy.calls == 1
+
+
+# --- card-to-card handover --------------------------------------------------
+
+
+def test_a_swap_shows_the_incoming_title_not_the_departing_one(
+    tmp_path: Path,
+) -> None:
+    """The kiosk must never advertise the game being tapped away from.
+
+    stop_current() waits out a grace period with the outgoing process still
+    alive, so status() is asked for the screen's contents mid-handover.
+    """
+    holder: dict[str, object] = {}
+    seen: list[dict[str, object]] = []
+
+    class ObservingProcess(FakeProcess):
+        """Reports what the kiosk would show from inside stop_current()."""
+
+        def wait(self, timeout: float | None = None) -> int:
+            service = holder.get("service")
+            if service is not None:
+                seen.append(service.status())
+            return super().wait(timeout)
+
+    service, _popen, _kills, _config = make_service(
+        tmp_path,
+        while_running="swap",
+        processes=[ObservingProcess(pid=101), FakeProcess(pid=202)],
+    )
+    holder["service"] = service
+
+    service.on_scan("aa-bb-cc")
+    assert service.status()["current"] == "Demo App"
+
+    service.on_scan("11-22-33")
+
+    assert seen, "stop_current() never waited, so nothing was observed"
+    mid = seen[0]
+    assert mid["current"] == "Second App"
+    assert mid["current_id"] == "second"
+    assert mid["launching"] is True
+    assert service.status()["current"] == "Second App"
+    assert service.status()["launching"] is False
+
+
+def test_a_failed_launch_does_not_strand_the_kiosk(tmp_path: Path) -> None:
+    """A title that cannot start must release the screen, not hold it."""
+
+    class FailingPopen:
+        calls: list[object] = []
+
+        def __call__(self, *args: object, **kwargs: object) -> object:
+            raise OSError("no such binary")
+
+    service, _popen, _kills, _config = make_service(tmp_path, while_running="swap")
+    service._popen_factory = FailingPopen()
+
+    service.on_scan("aa-bb-cc")
+
+    status = service.status()
+    assert status["launching"] is False
+    assert status["current"] is None
+    assert status["running"] is False
