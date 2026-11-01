@@ -545,6 +545,15 @@ PAGE_CSS = dedent("""
       gap: var(--s3);
       align-items: flex-end;
     }
+    /* Shown after the first click on anything destructive; the second click
+       goes through.  Takes the full row so it cannot be missed next to the
+       button that is about to act. */
+    .confirm-note {
+      flex-basis: 100%;
+      margin: var(--s2) 0 0;
+      font-weight: 700;
+      color: var(--bad);
+    }
     .link-button {
       background: none;
       border: none;
@@ -949,7 +958,10 @@ PARENT_EVENTS_SCRIPT = dedent("""
         fetch(form.action, {
           method: 'POST',
           body: '',
-          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
         })
           .then(function(r) { return r.json(); })
           .then(function(data) {
@@ -974,6 +986,57 @@ PARENT_EVENTS_SCRIPT = dedent("""
             enrollInProgress = false;
             window.location.replace('/');
           });
+      });
+    });
+
+    // Two-step confirmation, in the page.  This used to be an inline submit
+    // handler returning a JS dialog's answer, but such a dialog is at the
+    // mercy of the browser it is asked of -- and in a kiosk-mode Chromium a
+    // suppressed dialog reads as a cancel, so the form silently never submits
+    // and the button looks dead.  Nothing here needs the browser to grant a
+    // dialog: the first click shows what will happen, the second does it.
+    document.querySelectorAll('form[data-confirm]').forEach(function (form) {
+      form.addEventListener('submit', function (e) {
+        if (form.dataset.armed === '1') { return; }
+        e.preventDefault();
+        form.dataset.armed = '1';
+        var note = document.createElement('p');
+        note.className = 'confirm-note';
+        note.textContent = form.dataset.confirm;
+        form.appendChild(note);
+      });
+    });
+
+    // Reassigning needs no card tap, but it can still install a title that
+    // downloads on first use, which takes minutes.  Posting it in the
+    // background lets the operation overlay above report progress over SSE
+    // instead of the page sitting on a blank POST with nothing to show.
+    document.querySelectorAll('.reassign-form').forEach(function(form) {
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) { btn.disabled = true; }
+        setEnrollButtonsBusy(true);
+        fetch(form.action, {
+          method: 'POST',
+          body: new URLSearchParams(new FormData(form)),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.ok) {
+              window.location.replace('/');
+            } else {
+              overlayPinned = true;
+              showOverlay('__T_FAILED__', data.error || '__T_FAILED_BODY__', true);
+              setEnrollButtonsBusy(false);
+              if (btn) { btn.disabled = false; }
+            }
+          })
+          .catch(function() { window.location.replace('/'); });
       });
     });
     """).strip()
@@ -1713,7 +1776,10 @@ class WebApp:
 
         self._clear_readiness_cache()
         self.control.reload()
-        self.control.lock()
+        # No lock here. Enrolling does not lock either, and a parent tidying
+        # up several cards should not be thrown back to the card prompt after
+        # each one -- which also made a removal that worked look like one that
+        # had not.
         return f"Removed card {normalized_uid} from {removed.title_id}"
 
     def reload_daemon(self) -> str:
@@ -2215,9 +2281,14 @@ class WebApp:
             host = _urlparse(url).hostname or ""
             if not host:
                 raise ValueError("URL must include a hostname")
+            # Drop a leading "www." so the card covers the whole site: a bare
+            # host matches its subdomains, and real sites scatter logins,
+            # games and media across them.  Nothing further is trimmed --
+            # cutting "bbc.co.uk" back to "co.uk" would hand over the lot.
+            site = host[4:] if host.startswith("www.") and host.count(".") > 1 else host
             title = CatalogTitle(
                 id=title_id, label=label, type="web",
-                bundled=False, url=url, allowlist=(host,),
+                bundled=False, url=url, allowlist=(site,),
             )
         elif title_type == "exec":
             cmd_str = form.get("cmd", "").strip()
@@ -3171,7 +3242,7 @@ class WebApp:
             f'<option value="{code}">{t("keyboard." + code)}</option>'
             for code in _KEYBOARD_LAYOUTS
         )
-        shutdown_confirm = _js_in_attr(t("console.settings.shutdown_confirm"))
+        shutdown_confirm = escape(t("console.settings.shutdown_confirm"))
         screen_time_limit = screentime.read_limit(self.screen_time_limit_path)
         screen_time_usage = screentime.read_usage(self.screen_time_usage_path)
         used_minutes = screen_time_usage.seconds // 60
@@ -3192,7 +3263,7 @@ class WebApp:
                     used=used_minutes, limit=screen_time_limit,
                 )
             )
-        screen_time_reset_confirm = _js_in_attr(
+        screen_time_reset_confirm = escape(
             t("console.screen_time.reset_confirm")
         )
         current_language = read_language(self.language_path)
@@ -3253,7 +3324,7 @@ class WebApp:
                 </form>
                 <form method="post" action="/settings/screen-time/reset"
                       class="inline-form"
-                      onsubmit="return confirm('{screen_time_reset_confirm}')">
+                      data-confirm="{screen_time_reset_confirm}">
                   <button type="submit" class="btn-quiet">
                     {t('console.screen_time.reset')}
                   </button>
@@ -3450,7 +3521,7 @@ class WebApp:
                   </button>
                 </form>
                 <form method="post" action="/settings/shutdown"
-                      onsubmit="return confirm('{shutdown_confirm}')">
+                      data-confirm="{shutdown_confirm}">
                   <button type="submit" class="btn-danger">
                     {t('common.shutdown')}
                   </button>
@@ -3519,7 +3590,7 @@ class WebApp:
         )
         quoted_uid = quote(uid)
         reassign_label = escape(t("console.cards.reassign_label", uid=uid))
-        disable_confirm = _js_in_attr(t("console.cards.disable_confirm"))
+        disable_confirm = escape(t("console.cards.disable_confirm"))
         return dedent(f"""
             <tr>
               <td><span class="uid">{escape(uid)}</span></td>
@@ -3528,7 +3599,7 @@ class WebApp:
                 <form
                   method="post"
                   action="/cards/{quoted_uid}/reassign"
-                  class="inline-form"
+                  class="inline-form reassign-form"
                 >
                   <select name="title_id" aria-label="{reassign_label}">
                     {options}
@@ -3543,7 +3614,7 @@ class WebApp:
                   method="post"
                   action="/cards/{quoted_uid}/remove"
                   class="inline-form"
-                  onsubmit="return confirm('{disable_confirm}')"
+                  data-confirm="{disable_confirm}"
                 >
                   <button type="submit" class="btn-caution">
                     {t('console.cards.disable')}
@@ -4192,10 +4263,19 @@ def create_web_server(
                 return
             # Slow enrollment paths return JSON so the browser can show errors
             # inline without losing context. Quick setting paths stay HTML.
-            want_json = (
+            #
+            # Gated on the caller actually asking for JSON.  These same routes
+            # also back plain <form> posts, and when one of those lands on a
+            # JSON body the parent is dumped on a page of raw braces with no
+            # console and no way back -- which is exactly what happens to the
+            # reassign form, whose submit nothing intercepts.
+            json_route = (
                 path == "/admin/enroll"
                 or (path.startswith("/titles/") and path.endswith("/enroll"))
                 or (path.startswith("/cards/") and path.endswith("/reassign"))
+            )
+            want_json = json_route and "application/json" in (
+                self.headers.get("Accept") or ""
             )
             try:
                 if path == "/admin/enroll":

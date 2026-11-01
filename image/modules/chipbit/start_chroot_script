@@ -456,6 +456,35 @@ WifiEnabled=true
 WWANEnabled=true
 EOF
 
+# Chromium reads managed policy from one of these, depending on which package
+# the browser came from.  The launcher rewrites the file on every web/Ruffle
+# card launch to confine that card to its own allowlist, so the directory has
+# to exist and be writable by the service user before the first tap -- a card
+# whose policy cannot be written refuses to launch rather than running loose.
+# The seed below is the locked-down default: only the kiosk shell's own origin
+# is reachable, which is what the shell needs and nothing more.
+for policy_dir in /etc/chromium/policies/managed \
+                  /etc/chromium-browser/policies/managed; do
+    mkdir -p "${policy_dir}"
+    cat > "${policy_dir}/chipbit-allowlist.json" <<'EOF'
+{
+  "BrowserSignin": 0,
+  "DefaultPopupsSetting": 2,
+  "DeveloperToolsAvailability": 2,
+  "IncognitoModeAvailability": 1,
+  "PasswordManagerEnabled": false,
+  "URLAllowlist": [
+    "127.0.0.1:8080"
+  ],
+  "URLBlocklist": [
+    "*"
+  ]
+}
+EOF
+    chown -R chipbit:chipbit "${policy_dir}"
+    chmod 0755 "${policy_dir}"
+done
+
 mkdir -p /var/lib/chipbit
 chown chipbit:chipbit /var/lib/chipbit
 chmod 0755 /var/lib/chipbit

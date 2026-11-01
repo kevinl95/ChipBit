@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pwd
@@ -9,11 +10,11 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from . import screentime
 from .models import (
@@ -51,6 +52,15 @@ class LaunchSettings:
     chromium_bin: str = "chromium"
     ruffle_bin: str = "ruffle"
     allow_shutdown: bool = False
+    # Chromium reads managed policy from a fixed path that differs by package
+    # (`chromium` vs `chromium-browser` vs Google's build).  Every directory
+    # that exists is written, so the image does not have to guess which one
+    # its browser came from.
+    browser_policy_dirs: tuple[str, ...] = (
+        "/etc/chromium/policies/managed",
+        "/etc/chromium-browser/policies/managed",
+        "/etc/opt/chrome/policies/managed",
+    )
     shutdown_command: tuple[str, ...] = ("systemctl", "poweroff")
     volume_command: tuple[str, ...] = ("amixer", "set", "Master", "toggle")
 
@@ -385,6 +395,19 @@ class LauncherService:
                 self.settings,
             )
 
+            # A browser title that cannot be confined does not run. Launching
+            # it anyway is the failure this policy exists to prevent: the card
+            # looks the same to a child and goes anywhere on the web.
+            if title.type in {"web", "ruffle"} and not write_browser_policy(
+                title, self.settings.browser_policy_dirs
+            ):
+                log.error(
+                    "refusing to launch %s: no browser policy directory is "
+                    "writable, so its allowlist cannot be enforced",
+                    title.label,
+                )
+                return
+
             home = Path(os.environ.get("HOME") or pwd.getpwuid(os.getuid()).pw_dir)
             for rel in title.user_dirs:
                 try:
@@ -552,6 +575,75 @@ class LauncherService:
     def _clear_last_event_locked(self) -> None:
         self._last_event = None
         self._last_event_deadline = None
+
+
+BROWSER_POLICY_FILENAME = "chipbit-allowlist.json"
+
+# The kiosk shell and the Ruffle player are both served from here, so this
+# origin is allowed unconditionally.  Drop it and the console locks itself out.
+KIOSK_SHELL_ORIGIN = "127.0.0.1:8080"
+
+
+def browser_allowed_hosts(title: CatalogTitle) -> list[str]:
+    """The hosts a web title may navigate to, in policy-pattern form.
+
+    A bare hostname already matches its own subdomains, so no wildcard forms
+    are emitted.  Catalog entries written as `*.example.com` predate this
+    being enforced and are normalised rather than passed through, because
+    Chromium drops a pattern in that shape instead of honouring it.
+    """
+    allowed = [KIOSK_SHELL_ORIGIN]
+    candidates = list(title.allowlist)
+    # The card's own URL, so a title can never be blocked from its own page.
+    if title.url:
+        host = urlparse(title.url).hostname
+        if host:
+            candidates.append(host)
+    for entry in candidates:
+        host = entry.strip()
+        if host.startswith("*."):
+            host = host[2:]
+        if host and host not in allowed:
+            allowed.append(host)
+    return allowed
+
+
+def browser_policy(title: CatalogTitle) -> dict[str, object]:
+    """Managed policy confining the browser to one title's sites.
+
+    URLBlocklist gates *navigation*, not subresource loads, so the fonts,
+    CDNs and video a site pulls in keep working while a link to somewhere
+    else does not.  Popups are blocked because a popup opens as an ordinary
+    browser window with a location bar -- which is how a PWA handed a child
+    a URL bar and the run of the web.
+    """
+    return {
+        "URLBlocklist": ["*"],
+        "URLAllowlist": browser_allowed_hosts(title),
+        "DefaultPopupsSetting": 2,
+        "DeveloperToolsAvailability": 2,
+        "IncognitoModeAvailability": 1,
+        "BrowserSignin": 0,
+        "PasswordManagerEnabled": False,
+    }
+
+
+def write_browser_policy(title: CatalogTitle, dirs: Sequence[str]) -> list[Path]:
+    """Install the managed policy for `title`. Returns the files written."""
+    payload = json.dumps(browser_policy(title), indent=2, sort_keys=True) + "\n"
+    written: list[Path] = []
+    for raw in dirs:
+        directory = Path(raw)
+        if not directory.is_dir():
+            continue
+        target = directory / BROWSER_POLICY_FILENAME
+        try:
+            target.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            log.warning("could not write browser policy %s: %s", target, exc)
+            continue
+        written.append(target)
+    return written
 
 
 def build_launch_argv(

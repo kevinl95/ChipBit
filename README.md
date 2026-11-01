@@ -54,7 +54,7 @@ The fastest way to get files there is an external CD drive or USB stick. Plug it
 
 Copying does a bit of work for you. For ScummVM it runs `scummvm --detect` against the copied folder and prefills the game ID it finds, which is the field people most often get wrong: the ScummVM ID (`monkey`) is not the same thing as the ChipBit title ID (the folder name), and they are never interchangeable. For Flash it takes the `.swf` path as-is. When the copy finishes it drops you into the "Add your own" form with the paths already filled in, so you name the card and save.
 
-Ruffle plays a single `.swf` per card. Anything that loads assets over the network at runtime will not work, since the browser is locked to an allowlist.
+Ruffle plays a single `.swf` per card. A game that pulled levels or art from a server at runtime will not work, because that server is almost certainly gone, and nothing in ChipBit can bring it back.
 
 ## Enrolling a card
 
@@ -85,6 +85,16 @@ It copies everything in those folders, not just the pictures it can preview. It 
 ![The "Your child's work" page showing six Tux Paint drawings as thumbnails, each labelled with its filename](docs/screenshots/childs-work.png)
 
 Which folders get backed up comes from `user_dirs` in `catalog.yaml`. A title that pins its save location has to declare that same location, or its work is invisible to the backup. Tux Paint saves to `/var/lib/chipbit/tuxpaint` through `--savedir`, and LibreOffice saves to `~/Documents` through an XDG pin in the image. Both are declared, and there are tests that fail if they ever drift apart.
+
+## Web cards
+
+A web card launches Chromium confined to that card's `allowlist`. The launcher writes a Chromium managed policy before the browser starts: everything is blocked, then the card's hosts are allowed back.
+
+A bare hostname covers its subdomains, so `webkinz.com` reaches `play.webkinz.com` as well. Adding a site from the console derives that from the URL you type, trimming a leading `www.` and nothing else — cutting back any further would turn `bbc.co.uk` into `co.uk` and hand over every site under it. To widen or narrow a card, edit its `allowlist` in `/var/lib/chipbit/user-catalog.yaml`.
+
+The policy gates navigation, not subresource loads: a page's fonts, CDN images and video still load from wherever the site keeps them, while following a link to somewhere else does not. Popups are blocked as well, because a popup opens as an ordinary browser window with a location bar in it — which is how a site offering to "play without downloading" can otherwise hand a child the run of the web.
+
+A web card whose policy cannot be written refuses to launch rather than running unconfined.
 
 ## catalog.yaml
 

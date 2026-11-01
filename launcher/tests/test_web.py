@@ -1384,3 +1384,139 @@ def test_a_long_copy_holds_the_admin_session_open(tmp_path: Path) -> None:
     time.sleep(0.2)
     assert len(unlocks) == before, "and must stop once the job finishes"
 
+
+
+# --- form posts must never surface raw JSON ---------------------------------
+
+
+@dataclass
+class PostResult:
+    body: str
+    content_type: str
+
+
+def http_post_full(
+    url: str, form: dict[str, str], accept: str | None = None
+) -> PostResult:
+    request = Request(url, data=urlencode(form).encode("utf-8"), method="POST")
+    if accept is not None:
+        request.add_header("Accept", accept)
+    with urlopen(request) as response:
+        return PostResult(
+            response.read().decode("utf-8"),
+            response.headers.get("Content-Type", ""),
+        )
+
+
+def test_reassign_form_post_renders_the_console_not_raw_json(tmp_path: Path) -> None:
+    """Nothing intercepts the reassign form, so it posts as a real form.
+
+    Answering a form post with a JSON body strands the parent on a page of
+    braces with no console and no way back -- which is what a user hit.
+    """
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "ff-ee-dd"\ncards:\n  "aa-bb-cc": demo\n',
+        encoding="utf-8",
+    )
+    control_state = FakeControlState(unlocked=True)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            form = http_post_full(
+                f"{web_url}/cards/AABBCC/reassign", {"title_id": "demo"}
+            )
+            ajax = http_post_full(
+                f"{web_url}/cards/AABBCC/reassign",
+                {"title_id": "demo"},
+                accept="application/json",
+            )
+
+    assert form.content_type.startswith("text/html")
+    assert not form.body.lstrip().startswith("{")
+    assert "Game cards" in form.body
+
+    # The fetch path still gets JSON, so inline errors keep working.
+    assert ajax.content_type.startswith("application/json")
+    assert json.loads(ajax.body)["ok"] is True
+
+
+def test_added_website_card_allowlists_the_whole_site_not_just_www(
+    tmp_path: Path,
+) -> None:
+    """A real site spreads login, games and media across subdomains.
+
+    Trimming only "www." is deliberate: cutting back to a registrable domain
+    without a public-suffix list would turn bbc.co.uk into co.uk.
+    """
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text('system:\n  unlock: "ff-ee-dd"\n', encoding="utf-8")
+    user_catalog = tmp_path / "user-catalog.yaml"
+    control_state = FakeControlState(unlocked=True)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(
+            catalog_path, cards_path, control_url, user_catalog_path=user_catalog
+        ) as web_url:
+            http_post(
+                f"{web_url}/titles/custom",
+                {
+                    "type": "web",
+                    "label": "Webkinz",
+                    "url": "https://www.webkinz.com/",
+                },
+            )
+
+    merged = load_catalog_merged(catalog_path, user_catalog)
+    assert merged.titles["user-webkinz"].allowlist == ("webkinz.com",)
+
+
+# --- destructive actions must not depend on a JS dialog ---------------------
+
+
+def test_destructive_forms_do_not_rely_on_a_js_dialog(tmp_path: Path) -> None:
+    """`onsubmit="return confirm(...)"` is a dead button wherever the browser
+    declines the dialog, which a kiosk-mode Chromium may well do: a suppressed
+    confirm reads as cancel and the form never submits."""
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "ff-ee-dd"\ncards:\n  "aa-bb-cc": demo\n',
+        encoding="utf-8",
+    )
+    control_state = FakeControlState(unlocked=True)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            body = http_get(f"{web_url}/")
+
+    assert "onsubmit=" not in body
+    # Each destructive action still declares what it is about to do.
+    assert body.count("data-confirm=") == 3
+
+
+def test_removing_a_card_removes_it_and_keeps_the_console_open(
+    tmp_path: Path,
+) -> None:
+    catalog_path = write_catalog(tmp_path)
+    cards_path = tmp_path / "cards.yaml"
+    cards_path.write_text(
+        'system:\n  unlock: "ff-ee-dd"\ncards:\n'
+        '  "aa-bb-cc": demo\n  "11-22-33": demo\n',
+        encoding="utf-8",
+    )
+    control_state = FakeControlState(unlocked=True)
+
+    with run_control_server(control_state) as control_url:
+        with run_web_server(catalog_path, cards_path, control_url) as web_url:
+            http_post(f"{web_url}/cards/AABBCC/remove", {})
+
+    cards = load_cards(cards_path)
+    assert "AABBCC" not in cards.title_cards
+    # The other card and the admin card survive the edit.
+    assert cards.title_cards["112233"].title_id == "demo"
+    assert cards.system_cards["unlock"].uid == "FFEEDD"
+    # Tidying up several cards should not kick the parent out after each one.
+    assert control_state.lock_calls == 0

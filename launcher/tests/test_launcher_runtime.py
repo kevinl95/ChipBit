@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import signal
 import subprocess
@@ -719,3 +720,68 @@ def test_a_failed_launch_does_not_strand_the_kiosk(tmp_path: Path) -> None:
     assert status["launching"] is False
     assert status["current"] is None
     assert status["running"] is False
+
+
+# --- browser confinement ----------------------------------------------------
+
+
+def _web_title(**kw: object) -> CatalogTitle:
+    base: dict[str, object] = {
+        "id": "site",
+        "label": "Site",
+        "type": "web",
+        "bundled": False,
+        "url": "https://www.webkinz.com/",
+        "allowlist": ("webkinz.com",),
+    }
+    base.update(kw)
+    return CatalogTitle(**base)  # type: ignore[arg-type]
+
+
+def test_allowlist_covers_subdomains_without_wildcards(tmp_path: Path) -> None:
+    """A bare host matches its subdomains; Chromium drops `*.host` patterns."""
+    from chipbit.launcher import browser_allowed_hosts
+
+    hosts = browser_allowed_hosts(
+        _web_title(allowlist=("scratch.mit.edu", "*.scratch.mit.edu"))
+    )
+
+    assert "scratch.mit.edu" in hosts
+    assert not any(h.startswith("*") for h in hosts)
+    # The shell's own origin, or the parent console locks itself out.
+    assert "127.0.0.1:8080" in hosts
+    # The card's own site is always reachable even if the allowlist omits it.
+    assert "www.webkinz.com" in hosts
+
+
+def test_policy_blocks_everything_not_allowed(tmp_path: Path) -> None:
+    from chipbit.launcher import browser_policy
+
+    policy = browser_policy(_web_title())
+
+    assert policy["URLBlocklist"] == ["*"]
+    # A popup opens as a normal window with a location bar: that was the escape.
+    assert policy["DefaultPopupsSetting"] == 2
+    assert policy["DeveloperToolsAvailability"] == 2
+
+
+def test_policy_is_written_before_a_web_card_launches(tmp_path: Path) -> None:
+    from chipbit.launcher import BROWSER_POLICY_FILENAME, write_browser_policy
+
+    good = tmp_path / "managed"
+    good.mkdir()
+    written = write_browser_policy(_web_title(), [str(tmp_path / "absent"), str(good)])
+
+    assert written == [good / BROWSER_POLICY_FILENAME]
+    payload = json.loads((good / BROWSER_POLICY_FILENAME).read_text())
+    assert payload["URLBlocklist"] == ["*"]
+    assert "webkinz.com" in payload["URLAllowlist"]
+
+
+def test_a_web_card_refuses_to_launch_when_it_cannot_be_confined(
+    tmp_path: Path,
+) -> None:
+    """Running unconfined is the exact failure the policy exists to prevent."""
+    from chipbit.launcher import write_browser_policy
+
+    assert write_browser_policy(_web_title(), [str(tmp_path / "nope")]) == []
